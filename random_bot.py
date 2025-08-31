@@ -37,5 +37,5 @@ def info(message, massage=None):
         bot.send_message(message.chat.id, f'Привет, {message.from_user.first_name}')
     elif message.text.lower() == 'id':
         bot.reply_to(message,f'ID:{message.from_user.id}')
-
+# comment
 bot.polling(non_stop=True)

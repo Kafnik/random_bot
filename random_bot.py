@@ -39,5 +39,5 @@ def info(message, massage=None):
         bot.reply_to(message,f'ID:{message.from_user.id}')
 
 
-print('Бот запущен!')
+
 bot.polling(non_stop=True)

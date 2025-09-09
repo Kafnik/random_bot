@@ -1,6 +1,6 @@
 import telebot
 from time import sleep
-import random as rnd
+import random
 
 bot = telebot.TeleBot('8318795699:AAGyD4zsJAqi8xdRoPRppO4tTiddheu6f0w')
 
@@ -9,18 +9,18 @@ bot = telebot.TeleBot('8318795699:AAGyD4zsJAqi8xdRoPRppO4tTiddheu6f0w')
 def start(message):
     bot.send_message(message.chat.id, 'VECTORBOT')
     sleep(1)
-    bot.send_message(message.chat.id, 'Привет я бот рандома пропиши команду /random.')
+    bot.send_message(message.chat.id, 'Привет я бот рандома пропиши команду /random. Или ознакомьтесь со списком команд напишите в чат /help')
 
 
 @bot.message_handler(commands=['random'])
-def random(message):
-    number = rnd.randint(1, 100)
+def random_bot(message):
+    number = random.randint(1, 100)
     bot.send_message(message.chat.id, f'Ваше случайное число: {number}')
 
 
 @bot.message_handler(commands=['help'])
 def info(message):
-    bot.send_message(message.chat.id, 'В данном боте присудствую команды'
+    bot.send_message(message.chat.id, 'В данном боте присутствую команды'
                                       ' /start, /random, /help, /progress')
 
 @bot.message_handler(commands=['progress'])
@@ -37,6 +37,7 @@ def info(message, massage=None):
         bot.send_message(message.chat.id, f'Привет, {message.from_user.first_name}')
     elif message.text.lower() == 'id':
         bot.reply_to(message,f'ID:{message.from_user.id}')
+
 
 print('Бот запущен!')
 bot.polling(non_stop=True)

@@ -2,7 +2,6 @@ import telebot
 from time import sleep
 import random
 
-#привет это токетн
 bot = telebot.TeleBot('8318795699:AAGyD4zsJAqi8xdRoPRppO4tTiddheu6f0w')
 
 

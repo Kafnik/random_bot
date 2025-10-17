@@ -66,14 +66,14 @@ def start(message):
 
 #-----------------Обновление 1.3----------------------
 @bot.message_handler(commands=['halloween'])
-def halloween(message):
+def halloween_bot(message):
     markup = types.InlineKeyboardMarkup(row_width=2)
     who = types.InlineKeyboardButton("🧛🏻‍♀️Кто ты на Хуллоуин?", callback_data="who")
-    treat = types.InlineKeyboardButton("🍬Угощение или жизнь", calk_data="treat")
-    monster = types.InlineKeyboardButton("👻Монстр дня",callback_data="monster")
-    challenge = types.InlineKeyboardButton("🎲Испытание",callback_data="challenge")
+    treat = types.InlineKeyboardButton("🍬Угощение или жизнь", calback_data="treat")
+    monster = types.InlineKeyboardButton("👻Монстр дня", callback_data="monster")
+    challenge = types.InlineKeyboardButton("🎲Испытание", callback_data="challenge")
     markup.add(who, treat, monster, challenge)
-    bot.send_message(message.chat.id, "🎃 Добро пожаловать в *Halloween Random!*", reply_markup=markup)
+    bot.send_message(message.chat.id, "🎃 Добро пожаловать в *Halloween Random!*", reply_markup=markup, parse_mode="Markdown")
     
 
 # ---------------- Меню рандомных игр ----------------

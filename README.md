@@ -3,7 +3,7 @@
 <div align="center">
 
 <!-- ВСТАВЬТЕ СЮДА ВАШУ ССЫЛКУ НА КАРТИНКУ -->
-<img src="https://raw.githubusercontent.com/Kafnik/test/main/images/1612338119_random_bot-logo1.jpg" alt="RandomBot Logo" width="200">
+<img src="https://github.com/Kafnik/random_bot/blob/main/.gtihub/image/1612338119_random_bot-logo1.jpg" alt="RandomBot Logo" width="200">
 
 ![Python](https://img.shields.io/badge/Python-3.13.7+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Telegram](https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)

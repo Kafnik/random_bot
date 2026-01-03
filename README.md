@@ -154,7 +154,7 @@ if is_banned(user_id):
 
 /add_admin id пользователя
 /remove_admin id пользователя
-/add_dev id пользователя
+/add_dev id пользователя  
 /remove_dev id пользователя
 
 # Ситемные команды

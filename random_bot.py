@@ -588,6 +588,16 @@ def is_banned(user_id):
         
     return user_data[user_id].get('banned', False)
 
+@bot.message_hendler(commands=['status'])
+def status_bot(message):
+    user_id = str(message.from_user.id)
+
+    if not can_manage_admins(user_id):
+        bot.reply_to(message, "❌ Эта команда не доступна.")
+        return
+
+    bot.send_message(message.chat.id, 'Статус бота: Бот работает')
+
 @bot.message_handler(commands=['start'])
 def start_bot(message):
     user_id = str(message.from_user.id)
@@ -1467,7 +1477,7 @@ def give_premium_command(message):
     user_data = load_data()
 
     if not can_manage_admins(user_id):
-        bot.reply_to(message, "❌ ")
+        bot.reply_to(message, "❌ Эта команда не доступна.")
         return
     
     # Определяем кто выдает премиум
@@ -2240,7 +2250,7 @@ def feedback_stats_command(message):
     user_id = str(message.from_user.id)
     
     if not can_manage_admins(user_id):
-        bot.reply_to(message, "❌ Эта команда доступна только администраторам.")
+        bot.reply_to(message, "❌ Эта команда не доступна.")
         return
     
     user_data = load_data()

@@ -2330,6 +2330,7 @@ def send_feedback_to_admins(user_id, user_name, username, feedback_text):
 
 @bot.message_handler(commands=['info'])
 def bot_info(message):
+    user_id = str(message.from_user.id)
 
     if not BOT_ENABLED and not can_manage_admins(str(message.from_user.id)):
        bot.send_message(message.chat.id, "🚫 Бот временно недоступен.")
@@ -2350,6 +2351,7 @@ def bot_info(message):
 
 @bot.message_handler(commands=['help'])
 def bot_help(message):
+    user_id = str(message.from_user.id)
 
     if not BOT_ENABLED and not can_manage_admins(str(message.from_user.id)):
        bot.send_message(message.chat.id, "🚫 Бот временно недоступен.")
@@ -2715,7 +2717,7 @@ def easter_egg_status(message):
 
 @bot.message_handler(commands=['support'])
 def support_command(message):
-    bot.send_message(messgae.chat.id, '🚧 Эта команда в разработке ⚙')
+    bot.send_message(message.chat.id, '🚧 Эта команда в разработке ⚙')
  
 
 @bot.message_handler(content_types=['text'])

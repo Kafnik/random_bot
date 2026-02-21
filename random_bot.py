@@ -591,7 +591,7 @@ def is_banned(user_id):
 @bot.message_hendler(commands=['status'])
 def status_bot(message):
     user_id = str(message.from_user.id)
-
+    
     if not can_manage_admins(user_id):
         bot.reply_to(message, "❌ Эта команда не доступна.")
         return

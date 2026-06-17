@@ -4,7 +4,6 @@ import time
 import json
 import os
 import threading
-import configparser
 from telebot import types
 from datetime import datetime
 from datetime import datetime, timedelta
@@ -588,7 +587,7 @@ def is_banned(user_id):
         
     return user_data[user_id].get('banned', False)
 
-@bot.message_hendler(commands=['status'])
+@bot.message_handler(commands=['status'])
 def status_bot(message):
     user_id = str(message.from_user.id)
     
@@ -2847,4 +2846,4 @@ def handle_text(message):
     )
 
 print('Бот запущен !')
-bot.polling(non_stop=True)
+bot.polling(non_stop=True, timeout=120)

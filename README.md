@@ -1,10 +1,11 @@
 # 🎲 Random_bot - Telegram Random Bot
 <div align="center">
-![Python](https://img.shields.io/badge/Python-3.13.7+-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Telegram](https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
-![Version](https://img.shields.io/badge/Version-1.4-FF6B6B?style=for-the-badge)
-![Статус](https://img.shields.io/badge/статус-Работает-green?style=for-the-badge)
+[![Python](https://img.shields.io/badge/Python-3.13.7+-3776AB?style=for-the-badge&logo=python&logoColor=white)]
+[![Telegram](https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)]
+[![Version](https://img.shields.io/badge/Version-1.4-FF6B6B?style=for-the-badge)]
+[![Статс](https://img.shields.io/badge/статус-Работает-green?style=for-the-badge)]
 [![Установить](https://img.shields.io/badge/📦-Установить_бота-blue?style=for-the-badge)](https://github.com/Kafnik/random_bot/releases/tag/v.1.5-stable)
+
 
 <img src="https://github.com/Kafnik/random_bot/blob/main/.gtihub/image/random_logo.jpg" alt="RandomBot Logo" width="200">
 

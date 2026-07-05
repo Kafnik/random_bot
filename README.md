@@ -5,7 +5,7 @@
 ![Telegram](https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
 ![Version](https://img.shields.io/badge/Version-1.5.1-FF6B6B?style=for-the-badge)
 ![Статус](https://img.shields.io/badge/статус-Работает-green?style=for-the-badge)
-[![Установить](https://img.shields.io/badge/📦-Установить_бота-blue?style=for-the-badge)](https://github.com/Kafnik/random_bot/releases/tag/v.1.5.1-stable)
+[![Установить](https://img.shields.io/badge/📦-Установить_бота-blue?style=for-the-badge)](https://github.com/Kafnik/random_bot/releases/tag/v.1.5.1)
 
 <img src="https://github.com/Kafnik/random_bot/blob/main/.gtihub/image/random_logo.jpg" alt="RandomBot Logo" width="200">
 
@@ -26,7 +26,7 @@
 
 
 ## __Что нового ?__
-Мы добавили команду /get_status и /game_stop, сделали Class если в боте вышла ошибк при команде или кнопке этот Class уведомит разработчиков со статусами coder и developer уведомит с логами ошибки, и извинится перед пользователем что сейчас эта функция не доступна
+Мы добавили команду /get_status и /game_stop, сделали Class если в боте вышла ошибк при команде или кнопке этот Class уведомит разработчиков со статусами coder и developer уведомит с логами ошибки, и извинится перед пользователем что сейчас эта функция не доступна.
 Подробнее про команды - [здесь](#-список-команд)
 Подробнее про статусы - [здесь](#️-система-прав-и-статусов)
 
@@ -114,6 +114,7 @@ __Безопасная синхронизация:__ Мы используем �
 /sell_emoji - продать эмоджи на аукцион
 /help - показывает все команды достпуны для пользователей
 /bio - изминить био в глобальном аккаунте
+/game_stop - остнавливает текущую игру
 /feedback - оставьте приятный коментарий
 /support - эта команда в разработке ⚙
 

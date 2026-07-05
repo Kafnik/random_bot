@@ -3,20 +3,22 @@ import sqlite3
 import random
 import time
 import openbot_id
+import traceback
+import html
 from datetime import datetime, timedelta
 from telebot import types
 from collections import defaultdict
 
-TOKEN = "Ваш TOKEN"
+TOKEN = "TOKEN"
 bot = telebot.TeleBot(TOKEN) # Заминете на свой реальный токен бота
 
 # ========== НАСТРОЙКИ ==========
 openbot_id.init_id_system()
 DEFAULT_DIFFICULTY = "normal"
 DB_NAME = "Random_bot.1.5.db"
-MAINTENANCE_MODE = True
+MAINTENANCE_MODE = False
 ALLOWED_ROLES = ["developer", "coder", "admin"]
-DEVELOPER_CHAT_ID = 1234567890 # Замените на свой реальный ID 
+DEVELOPER_CHAT_ID = 123456 # Замените на свой реальный ID 
 
 # ========== ДОСТИЖЕНИЯ ЗА УРОВНИ ==========
 LEVEL_ACHIEVEMENTS = {
@@ -325,16 +327,6 @@ def rps_keyboard():
     return kb
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
-def difficulty_menu(user_id):
-    current = get_difficulty(user_id)
-    icons = {"easy": "🟢", "normal": "🟡", "hard": "🔴"}
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton(f"{icons['easy']} Лёгко {'✅' if current=='easy' else ''}", callback_data="diff_easy"),
-           types.InlineKeyboardButton(f"{icons['normal']} Нормально {'✅' if current=='normal' else ''}", callback_data="diff_normal"),
-           types.InlineKeyboardButton(f"{icons['hard']} Хард {'✅' if current=='hard' else ''}", callback_data="diff_hard"))
-    kb.add(types.InlineKeyboardButton("⬅ Назад", callback_data="back_main"))
-    return kb
-
 def save_game(user_id, name, key, secret, attempts):
     cursor = conn.cursor()
     cursor.execute("INSERT OR REPLACE INTO active_games (user_id, game_name, game_key, secret_number, attempts, started_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -622,7 +614,7 @@ def process_guess(chat_id, user_id, num, max_num):
 
 # ========== АУКЦИОН ==========
 def get_auction_lots():
-    conn2 = sqlite3.connect("Random_bot.1.4.db")
+    conn2 = sqlite3.connect("Random_bot.1.5.db")
     cur = conn2.cursor()
     cur.execute("SELECT lot_id, item_value, price, seller_id FROM auction")
     lots = cur.fetchall()
@@ -822,6 +814,10 @@ def sell_item(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     parts = message.text.split()
+
+    if MAINTENANCE_MODE and not has_access(uid):
+        bot.reply_to(message, "🟠 Ведутся технические работы. Зайдите позже!")
+        return
     if openbot_id.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
@@ -1157,7 +1153,9 @@ def bot_help(message):
 /sell_emoji - продать эмоджи на аукцион
 /support - открывает поддержку (⚠ Но она в разработке !)
 /id_profile - открывает глобальный аккаунт  
-/profile - открывает профиль
+/profile - открывает профил
+/game_stop - остановить игру
+/bio - изминить био в глобальном аккаунте
 /feedback - оставте отзыв 
 
 <i>Обновлено 2026 года</i>"""
@@ -1248,6 +1246,10 @@ def cmd_level_up(message):
 def feedback_command(message):
     uid = message.from_user.id
     reason = check_ban(uid)
+
+    if MAINTENANCE_MODE and not has_access(uid):
+        bot.reply_to(message, "🟠 Ведутся технические работы. Зайдите позже!")
+        return
     if openbot_id.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
@@ -1301,6 +1303,9 @@ def feedback_command(message):
 def set_bio_command(message):
     uid = message.from_user.id
     reason = check_ban(uid)
+    if MAINTENANCE_MODE and not has_access(uid):
+        bot.reply_to(message, "🟠 Ведутся технические работы. Зайдите позже!")
+        return
     if openbot_id.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
@@ -1331,6 +1336,9 @@ def commagd_profile(message):
     user = get_user(uid)
     global_data = openbot_id.get_id(uid)
     reason = check_ban(uid)
+    if MAINTENANCE_MODE and not has_access(uid):
+        bot.reply_to(message, "🟠 Ведутся технические работы. Зайдите позже!")
+        return
     if openbot_id.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
@@ -1390,6 +1398,9 @@ def id_profile(message):
     global_data = openbot_id.get_id(uid)
     reason = check_ban(uid)
 
+    if MAINTENANCE_MODE and not has_access(uid):
+        bot.reply_to(message, "🟠 Ведутся технические работы. Зайдите позже!")
+        return
     if openbot_id.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
@@ -1431,15 +1442,139 @@ def id_profile(message):
         text = "❌ У вас еще не создан Openbot AI ID. Напишите /start."
         bot.send_message(cid, text)
 
+@bot.message_handler(commands=['get_status'])
+def get_status_command(message):
+    uid = message.from_user.id
+    reason = check_ban(uid)
 
-@bot.message_handler(func=lambda m: is_playing(m.from_user.id) and get_active_game(m.from_user.id)[2] != "tic")
+    if MAINTENANCE_MODE and not has_access(uid):
+        bot.reply_to(message, "🟠 Ведутся технические работы. Зайдите позже!")
+        return
+    if openbot_id.is_globally_banned(uid):
+        bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
+        return
+    if reason:
+        bot.reply_to(message, f"🚫 Вы заблокированы!\nПричина: {reason}")
+        return
+    if not has_access(uid):
+        bot.reply_to(message, "⛔ У вас нет прав для изменения статусов.")
+        return
+
+    # Разбираем аргументы: /get_status @username роль
+    parts = message.text.split()
+    if len(parts) < 3:
+        bot.reply_to(message, "⚠️ **Формат команды:**\n`/get_status @username [роль]`\n\nДоступные роли: `user`, `admin`, `coder`, `developer`", parse_mode="Markdown")
+        return
+
+    target_username = parts[1].replace("@", "").strip().lower()
+    new_status = parts[2].strip().lower()
+
+    # Проверяем, существует ли вообще такая роль в словаре STATUS
+    if new_status not in STATUS:
+        bot.reply_to(message, f"❌ Роль `{new_status}` не существует.\nВыбирай из: `user`, `admin`, `coder`, `developer`", parse_mode="Markdown")
+        return
+
+    cursor = conn.cursor()
+    # Ищем пользователя в базе данных
+    cursor.execute("SELECT id, first_name FROM users WHERE username = ?", (target_username,))
+    result = cursor.fetchone()
+    
+    if result:
+        target_id, first_name = result
+        
+        # Обновляем статус пользователя в БД
+        cursor.execute("UPDATE users SET status = ? WHERE id = ?", (new_status, target_id))
+        conn.commit()
+        
+        display_status = STATUS.get(new_status, new_status)
+        
+        bot.reply_to(
+            message, 
+            f"✅ **Статус изменен!**\nПользователю @{target_username} ({first_name}) успешно выдан статус:\n{display_status} (`{new_status}`)"
+        )
+        
+        # Пытаемся отправить уведомление самому пользователю в ЛС
+        try:
+            bot.send_message(target_id, f"🎭 Администратор изменил ваш статус на: {display_status}!")
+        except:
+            pass
+    else:
+        bot.reply_to(message, f"❌ Пользователь @{target_username} не найден в базе данных бота.")
+
+@bot.message_handler(commands=['game_stop'])
+def game_stop_command(message):
+    uid = message.from_user.id
+    reason = check_ban(uid)
+
+    if MAINTENANCE_MODE and not has_access(uid):
+        bot.reply_to(message, "🟠 Ведутся технические работы. Зайдите позже!")
+        return
+    if openbot_id.is_globally_banned(uid):
+        bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
+        return
+    if reason:
+        bot.reply_to(message, f"🚫 Вы заблокированы!\nПричина: {reason}")
+        return
+
+    if not is_playing(uid):
+        bot.reply_to(message, "⚠️ У вас нет активной игры.")
+        return
+
+    game = get_active_game(uid)
+    game_name = game[1] if game else "игра"
+
+    if uid in tic_games:
+        del tic_games[uid]
+    delete_active_game(uid)
+    bot.reply_to(message, f"🛑 Игра «{game_name}» остановлена.")
+
+@bot.message_handler(commands=['MODE_false'])
+def mode_false(message):
+    uid = message.from_user.id
+    reason = check_ban(uid)
+
+    if openbot_id.is_globally_banned(uid):
+        bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
+        return
+    if reason:
+        bot.reply_to(message, f"🚫 Вы заблокированы!\nПричина: {reason}")
+        return
+    
+    if not has_access(uid):
+        bot.reply_to(message, "⛔ У вас нет прав.")
+        return
+    global MAINTENANCE_MODE
+    MAINTENANCE_MODE = False
+    bot.reply_to(message, "🟢 Режим обслуживания отключен.")
+
+@bot.message_handler(commands=['MODE_true'])
+def mode_tre(message):
+    uid = message.from_user.id
+    reason = check_ban(uid)
+
+    if openbot_id.is_globally_banned(uid):
+        bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
+        return
+    if reason:
+        bot.reply_to(message, f"🚫 Вы заблокированы!\nПричина: {reason}")
+        return
+    
+    if not has_access(uid):
+        bot.reply_to(message, "⛔ У вас нет прав.")
+        return
+    global MAINTENANCE_MODE
+    MAINTENANCE_MODE = True
+    bot.reply_to(message, "🟠 Режим обслуживания включен.")
+    
+@bot.message_handler(func=lambda m: is_playing(m.from_user.id) and get_active_game(m.from_user.id)[2] != "tic" and not m.text.startswith('/'))
 def game_input(message):
-    try: num = int(message.text)
-    except: return
+    try: 
+        num = int(message.text)
+    except: 
+        return
     game = get_active_game(message.from_user.id)
     if game:
         process_guess(message.chat.id, message.from_user.id, num, {"watermelon": 10, "sun": 15, "lemonade": 20, "beach": 25}.get(game[2], 10))
-
 # +++++++++++++++ Комнады в разработке +++++++++++++
 
 @bot.message_handler(commands=['support'])
@@ -1565,7 +1700,6 @@ def callbacks(call):
 
     elif call.data == 'change_global_name': bot.answer_callback_query(call.id, '⚠ Это функция бота в разработке!\n Ожидается в 1.6')
     elif call.data == 'set': bot.answer_callback_query(call.id, '⚠ Это функция бота в разработке !\n Ожидается в 1.6')
-    elif call.data == 'level_hard': bot.edit_message_text('Выберите сложность', cid, call.message.message_id, reply_markup=difficulty_menu(uid))
     elif call.data == "diff_easy": set_difficulty(uid, "easy"); bot.answer_callback_query(call.id, "🟢 Лёгкая")
     elif call.data == "diff_normal": set_difficulty(uid, "normal"); bot.answer_callback_query(call.id, "🟡 Нормальная")
     elif call.data == "diff_hard": set_difficulty(uid, "hard"); bot.answer_callback_query(call.id, "🔴 Хард")
@@ -1880,14 +2014,101 @@ def callbacks(call):
         kb.add(types.InlineKeyboardButton("⬅ Назад", callback_data="back_main"))
         bot.edit_message_text(text, cid, call.message.message_id, reply_markup=kb, parse_mode="Markdown")
 
-if __name__ == "__main__":
-    print(f"[ Успешно ] Бот рапущен и готов к работе!")
-    while True:
+
+# Создаем класс для перехвата исключений
+class GlobalExceptionHandler(telebot.ExceptionHandler):
+    def handle(self, exception):
+        # 1. Выводим ошибку в консоль терминала
+        print("\n[!!!] КРИТИЧЕСКАЯ ОШИБКА В БОТЕ [!!!]")
+        traceback.print_exc()
+        print("-------------------------------------------\n")
+        
+        # Переменные для сбора информации об ошибке
+        user_chat_id = None
+        user_info = "Неизвестно"
+        command_info = "Неизвестно"
+        is_callback = False
+        call_id = None
+        
+        # Магия Python: заглядываем внутрь упавшей функции
+        tb = exception.__traceback__
+        while tb:
+            frame = tb.tb_frame
+            # Если ошибка произошла при нажатии на КНОПКУ (callback_query)
+            if 'call' in frame.f_locals:
+                call = frame.f_locals['call']
+                if hasattr(call, 'message') and call.message:
+                    is_callback = True
+                    call_id = call.id
+                    user_chat_id = call.message.chat.id
+                    user_info = f"@{call.from_user.username} (ID: {call.from_user.id})"
+                    command_info = f"Кнопка (callback_data): {call.data}"
+                    break
+            # Если ошибка произошла в обычной КОМАНДЕ или ТЕКСТЕ (message)
+            elif 'message' in frame.f_locals:
+                msg = frame.f_locals['message']
+                if hasattr(msg, 'chat'):
+                    user_chat_id = msg.chat.id
+                    user_info = f"@{msg.from_user.username} (ID: {msg.from_user.id})"
+                    command_info = f"Команда/Текст: {msg.text}"
+                    break
+            tb = tb.tb_next
+
+        # Экранируем спецсимволы, чтобы они точно не сломали HTML-разметку Телеграма
+        user_info_html = html.escape(user_info)
+        command_info_html = html.escape(command_info)
+
+        # 2. Отправляем ответ пострадавшему пользователю (alert для кнопок, текст для команд)
+        if user_chat_id:
+            try:
+                if is_callback and call_id:
+                    alert_text = (
+                        "⚠️ Ошибка при нажатии кнопки!\n\n"
+                        "Извините, это действие сейчас недоступно из-за ошибки в БД.\n"
+                        "Разработчики уже уведомлены!"
+                    )
+                    bot.answer_callback_query(call_id, alert_text, show_alert=True)
+                else:
+                    user_text = (
+                        "🤖 <b>Ой! Произошла непредвиденная ошибка...</b>\n\n"
+                        "Извините, в работе этой функции что-то пошло не так. "
+                        "Возможно, указана неверная база данных.\n"
+                        "Разработчики уже уведомлены и чинят её! 🛠"
+                    )
+                    bot.send_message(user_chat_id, user_text, parse_mode="HTML")
+            except Exception as e:
+                print(f"Не удалось отправить уведомление пользователю: {e}")
+
+        # 3. Формируем текст отчета в безопасном HTML формате
+        full_error = traceback.format_exc()
+        safe_error = html.escape(full_error)  # Защита от кривых символов в путях файлов
+        
+        dev_report = (
+            "🚨 <b>КРИТИЧЕСКАЯ ОШИБКА В РАБОТЕ БОТА!</b>\n\n"
+            f"👤 <b>Пользователь:</b> {user_info_html}\n"
+            f"💬 <b>Действие:</b> {command_info_html}\n\n"
+            f"📥 <b>Лог ошибки:</b>\n<pre><code class=\"language-python\">{safe_error}</code></pre>"
+        )
+        
+        # 4. Рассылаем уведомление ТОЛЬКО тем, у кого статус 'developer' или 'coder' в БД
         try:
-            # Используем увеличенные интервалы для стабильности
-            bot.polling(non_stop=True, timeout=120)
-        except Exception as e:
-            print(f"Ошибка сети или API: {e}")
-            # Ждем 5 секунд перед перезапуском, чтобы не спамить Telegram
-            import time
-            time.sleep(5)
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM users WHERE status IN ('developer', 'coder')")
+            devs = cursor.fetchall()
+            
+            for dev in devs:
+                try:
+                    # Отправляем лог с использованием parse_mode="HTML"
+                    bot.send_message(dev[0], dev_report, parse_mode="HTML")
+                except Exception as e:
+                    print(f"Не удалось отправить отчет девелоперу/кодеру с ID {dev[0]}: {e}")
+        except Exception as db_err:
+            print(f"Не удалось сделать запрос к БД для поиска админов: {db_err}")
+            
+        return True # Бот продолжает стабильно работать
+
+# Подключаем обновленный щит к боту
+bot.exception_handler = GlobalExceptionHandler()
+
+print(f"[ Успешно ] Бот рапущен и готов к работе!")
+bot.polling(non_stop=True, timeout=60)

@@ -8,23 +8,20 @@ import html
 # === 
 from functools import wraps
 import requests
-import io
 # +++++++
 from telebot import apihelper
 from datetime import datetime
 from telebot import types
-from telebot.types import Message
 
 
 # ======= Настройка ======
 openbot_id.init_id_system()
-invoice_messages = {}
 DB_NAME = "Random_bot.1.6.db"
 MAINTENANCE_MODE = False
 DEVELOPER_CHAT_ID = 6265920670 # Замените на свой ID
 # ========================
 
-TOKEN = "TOKEN" # Токен бота 
+TOKEN = "8493714047:AAGAVFDc_nvDR2S6LLpgDBhx85dikxJVMMY" # Токен бота 
 
 bot = telebot.TeleBot(TOKEN, use_class_middlewares=True)
 
@@ -314,15 +311,6 @@ def init_db():
         )
     """)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS user_property (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            property_name TEXT,
-            property_type TEXT,
-            income INTEGER
-        )
-    """)
-    cursor.execute("""
         CREATE TABLE IF NOT EXISTS auction (
             lot_id INTEGER PRIMARY KEY AUTOINCREMENT,
             seller_id INTEGER,
@@ -399,13 +387,6 @@ def toggle_user_setting(user_id, setting_name):
         conn.commit()
         return new_val
     
-def get_progress_bar(current, total=100, length=8):
-    """Генератор визуального прогресс-бара"""
-    percent = min(max(current / total, 0), 1) if total > 0 else 0
-    filled_length = int(length * percent)
-    bar = "🟩" * filled_length + "⬜" * (length - filled_length)
-    return f"[{bar}] {int(percent * 100)}%"
-
 def sync_global_status(user_id):
     """
     Синхронизация GLOBAL -> LOCAL через OpenBot API.
@@ -479,15 +460,6 @@ def sync_global_status(user_id):
         return False
 
 
-def get_local_role(user_id):
-    cursor = conn.cursor()
-    cursor.execute("SELECT status, role_level FROM users WHERE user_id = ?", (user_id,))
-    row = cursor.fetchone()
-    if not row:
-        return 'user', 1
-    return str(row[0] or 'user').lower(), int(row[1] or 1)
-
-
 def get_user(user_id):
     sync_global_status(user_id)
     cursor = conn.cursor()
@@ -518,23 +490,6 @@ def add_coins(user_id, amount):
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (amount, user_id))
     conn.commit()
-
-def buy_property(user_id, property_name, property_type, price, income):
-    cursor = conn.cursor()
-    cursor.execute("SELECT coins FROM users WHERE user_id = ?", (user_id,))
-    coins = cursor.fetchone()[0]
-    if coins < price:
-        return False
-    cursor.execute("UPDATE users SET coins = coins - ? WHERE user_id = ?", (price, user_id))
-    cursor.execute("INSERT INTO user_property (user_id, property_name, property_type, income) VALUES (?, ?, ?, ?)",
-                   (user_id, property_name, property_type, income))
-    conn.commit()
-    return True
-
-def get_user_properties(user_id):
-    cursor = conn.cursor()
-    cursor.execute("SELECT property_name, income FROM user_property WHERE user_id = ?", (user_id,))
-    return cursor.fetchall()
 
 def count_matched_digits(secret, guess):
     return sum(1 for s, g in zip(secret, guess) if s == g)
@@ -573,11 +528,6 @@ def check_ban(user_id):
 def add_xp(user_id, amount):
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET XP = XP + ? WHERE user_id = ?", (amount, user_id))
-    conn.commit()
-
-def add_to_inventory(user_id, item_value, item_type='emoji'):
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO inventory (user_id, item_type, item_value) VALUES (?, ?, ?)", (user_id, item_type, item_value))
     conn.commit()
 
 def set_active_game(user_id, chat_id, game_type, secret_number=0, attempts=5, secret_code=None):
@@ -622,14 +572,10 @@ def build_ttt_keyboard(board_str):
     return markup
 
 # ============= Конфеты 🍬 =============
-CANDY_DROP_CHANCE = 0.25  # шанс найти конфеты при раскопках и в играх
 CHEST_COST = 5            # цена Жуткого сундука в конфетах (без событий)
 
 def chest_cost():
     return 3 if get_daily_event() == "sale" else CHEST_COST
-
-def candy_drop_chance():
-    return 0.6 if get_daily_event() == "sweet_day" else CANDY_DROP_CHANCE
 
 SPOOKY_REWARDS = [
     ("👻", "Обычная", 45.0),
@@ -658,25 +604,6 @@ def add_candies(user_id, amount, source=None):
             check_achievements(user_id)
         except Exception as e:
             print(f"[RND STATS ERROR] {e}")
-
-def try_drop_candy(user_id, callback_id=None):
-    if random.random() <= candy_drop_chance():
-        amount = random.randint(1, 2)
-        add_candies(user_id, amount, source='drop')
-
-        if callback_id:
-            try:
-                bot.answer_callback_query(
-                    callback_id,
-                    f"🍬 Ты нашёл конфеты: +{amount}!",
-                    show_alert=True
-                )
-            except Exception:
-                pass
-
-        return True
-
-    return False
 
 def get_candies(user_id):
     cursor = conn.cursor()
@@ -1364,7 +1291,7 @@ def buy_halloween_title(user_id, title_key):
 
 def halloween_titles_reply():
     markup = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
-    for key, (name, price) in HALLOWEEN_TITLES.items():
+    for name, price in HALLOWEEN_TITLES.values():
         markup.add(types.KeyboardButton(f"🏆 {name} — {price:,} 🪙".replace(',', ' ')))
     markup.add(types.KeyboardButton("⬅ Магазин"))
     return markup
@@ -1517,11 +1444,6 @@ def game_action_reply(action=None):
     return markup
 
 # ============= Коллекция эмоджи: редкость и цена =============
-EMOJI_RARITY = {
-    "💀": "Обычная", "🦴": "Обычная", "🔮": "Обычная", "📜": "Обычная", "👻": "Обычная",
-    "🩸": "Редкая", "☠️": "Очень редкая", "😈": "Эпическая", "🕷️": "Мифическая", "👁️": "Легендарная",
-}
-
 EMOJI_DATA = {
 
     # ⚪ Обычные — 1 000–5 000
@@ -2006,7 +1928,7 @@ def start_bot(message):
     create_user(user_id, username, first_name)
 
     # Проверяем, какой тип клавиатуры выбрал пользователь
-    kb_type, notifications, show_id = get_user_settings(user_id)
+    kb_type = get_user_settings(user_id)[0]
 
     if kb_type == "reply":
         # Обычные кнопки снизу
@@ -2769,11 +2691,7 @@ def get_profile_text(user_id):
 @check_level('tester', level=2)
 def profile_command(message):
     user_id = message.from_user.id
-
-    # Здесь твой существующий код профиля
-    # Например:
     user = get_user(user_id)
-    global_data = openbot_id.get_id(user_id)
 
     if not user:
         bot.send_message(
@@ -2782,8 +2700,6 @@ def profile_command(message):
         )
         return
 
-    # Если у тебя уже есть готовая функция формирования профиля,
-    # используй её здесь:
     profile_text = get_profile_text(user_id)
 
     bot.send_message(
@@ -2832,7 +2748,7 @@ def set_status_command(message):
         bot.reply_to(message, f"❌ Пользователь @{target_username} не найден.")
         return
 
-    target_id, target_name = res
+    target_id = res[0]
     cursor.execute("UPDATE users SET status = ? WHERE user_id = ?", (new_status, target_id))
     conn.commit()
 
@@ -3036,7 +2952,6 @@ def _fmt(n):
 
 # ---------- 🎲 Событие дня ----------
 RND_EVENTS = {
-    "sweet_day": ("🍭 Сладкий день", "Шанс найти конфеты при раскопках и в играх — 60%."),
     "sale": ("🏷 Распродажа у призрака", "Жуткий сундук стоит всего 3 🍬."),
     "full_moon": ("🌕 Полнолуние", "Дом с привидениями производит в 2 раза больше конфет."),
     "lucky_gift": ("🎁 Щедрый призрак", "Подарок дня удваивается."),
@@ -3375,17 +3290,7 @@ def handle_callback(call):
     cid = call.message.chat.id
     mid = call.message.message_id
     
-    if call.data == 'game':
-        bot.edit_message_text(
-            "🎮 <b>Выберите игру:</b>",
-            chat_id=user_id,
-            message_id=call.message.message_id,
-            reply_markup=game_mune(),
-            parse_mode="HTML"
-        )
-        bot.answer_callback_query(call.id)
-    
-    elif call.data == 'back':
+    if call.data == 'back':
         bot.edit_message_text(
             f'👋 Привет, {call.from_user.first_name}\nДобро пожаловать!',
             chat_id=user_id,
@@ -3393,9 +3298,6 @@ def handle_callback(call):
             reply_markup=main_mune()
         )
         bot.answer_callback_query(call.id)
-    elif call.data == 'case':
-        pass
-
     elif call.data == 'buy_coins':
         bot.edit_message_text(
             "⭐ <b>МАГАЗИН ЗА STARS</b>\n\n"
@@ -3462,23 +3364,17 @@ def handle_callback(call):
         
     elif call.data == 'profile':
         user = get_user(user_id)
-    
-    # 1. Заменили uid на user_id
-        global_data = openbot_id.get_id(user_id) 
-
-    # 2. Достаем надетый предмет отдельно, чтобы он работал всегда
+        global_data = openbot_id.get_id(user_id)
         equipped = get_equipped_emoji(user_id)
 
         if global_data:
             g_name = global_data[2]
             g_tag = global_data[5] or "Не установлен"
-            g_status_key = global_data[6]
             base_name = g_name
         else:
             base_name = user[2] if user else "Игрок"
             g_tag = "Отсутствует"
 
-    # 3. Объединяем эмоджи и имя для обоих случаев
         full_name = f"{equipped} {base_name}".strip()
 
         status_key = user[3] if user else "user"
@@ -3515,47 +3411,6 @@ def handle_callback(call):
 
         bot.answer_callback_query(call.id)
 
-    # --- ОБНОВЛЕННЫЙ ПРОФИЛЬ С БЛОКАМИ <blockquote> И ПРОГРЕСС-БАРОМ ---
-    elif call.data == 'profile':
-        user = get_user(user_id)
-        global_data = openbot_id.get_id(uid)
-
-        if global_data:
-            g_name = global_data[2]
-            equipped = get_equipped_emoji(user_id)
-            g_tag = global_data[5] or "Не установлен"
-            g_status_key = global_data[6]
-            full_name = f"{equipped} {g_name}".strip()
-        else:
-            full_name = user[2] if user else "Игрок"
-            g_tag = "Отсутствует"
-
-        display_status = STATUS.get(user[3] if user else "👤 Игрок")
-        title = PROFILE_TITLES.get(user[4] if user else "none", "Без титула")
-            
-        if user:
-            profile_text = f"""<b>ПРОФИЛЬ</b>
-━━━━━━━━━━━━━━━━━━
-👤 <b>Имя в сети:</b>{full_name}
-🆔 <b>Ваш Тег:</b> <code>{g_tag}</code>
-🎭 <b>Статус:</b> {display_status}
-🎖 <b>Игровой титул:</b> {title}
-
-📊 <b>ИГРОВАЯ СТАТИСТИКА:</b>
-⭐ <b>Уровень:</b> {user[6]}
-✨ <b>Опыт:</b> {user[7]}
-💰 <b>Монеты:</b> {user[5]} 💰
-━━━━━━━━━━━━━━━━━━━
-"""
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            markup.add(
-                types.InlineKeyboardButton('⚙ Настройки ID', callback_data='settings_id'),
-                types.InlineKeyboardButton('⬅ В главное меню', callback_data='back')
-            )
-            bot.edit_message_text(profile_text, chat_id=user_id, message_id=call.message.message_id, 
-                                reply_markup=markup, parse_mode="HTML")
-        bot.answer_callback_query(call.id)
-    
     # --- 🏪 РЫНОК ---
     elif call.data == 'market':
         show_market(cid, mid, user_id, page=1)
@@ -3908,46 +3763,6 @@ def handle_callback(call):
 
         bot.answer_callback_query(call.id)
         
-    # ===== ИГРА: БИЗНЕСМЕН (С POP-UP УВЕДОМЛЕНИЯМИ) =====
-    elif call.data == 'start_clicker':
-        set_active_game(user_id, call.message.chat.id, 'clicker')
-        user = get_user(user_id)
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("💸 КЛИК!", callback_data="game_click"),
-            types.InlineKeyboardButton("🏙 Недвижимость", callback_data="realestate"),
-            types.InlineKeyboardButton("🛒 Магазин", callback_data="shop_business"),
-            types.InlineKeyboardButton("🛑 Версия игры", callback_data='version_business')
-        )
-        bot.edit_message_text(
-            f"💸 <b>Игра «Бизнесмен»</b>\n\nТвой баланс: {user[5]} монет 💰\nДля выхода введи /game_stop", 
-            chat_id=user_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML"
-        )
-        bot.answer_callback_query(call.id)
-        return
-    
-    elif call.data == 'game_click':
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET coins = coins + 10 WHERE user_id = ?", (user_id,))
-        conn.commit()
-                    
-        updated_user = get_user(user_id)
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("💸 КЛИК!", callback_data="game_click"),
-            types.InlineKeyboardButton("🏙 Недвижимость", callback_data="realestate"),
-            types.InlineKeyboardButton("🛒 Магазин", callback_data="shop_business"),
-            types.InlineKeyboardButton("🛑 Версия игры", callback_data='version_business')
-        )
-        try:
-            bot.edit_message_text(
-                f"💸 <b>Игра «Бизнесмен»</b>\n\nТвой баланс: {updated_user[5]} монет 💰\nДля выхода введи /game_stop", 
-                chat_id=user_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML"
-            )
-        except:
-            pass
-        bot.answer_callback_query(call.id, "💥 КЛИК! +10 💰", show_alert=False)
-        
     elif call.data == 'settings_user':
         bot.edit_message_text(
             "⚙ **Настройки профиля:**\n\n"
@@ -4013,128 +3828,6 @@ def handle_callback(call):
         bot.edit_message_reply_markup(chat_id=user_id, message_id=call.message.message_id, reply_markup=settings_menu(user_id))
         bot.answer_callback_query(call.id, msg_text)
         
-    elif call.data == 'realestate':
-        properties = get_user_properties(user_id)
-        if properties:
-            text = "🏙 <b>Твоя недвижимость:</b>\n\n"
-            for prop_name, income in properties:
-                text += f"▪️ {prop_name} (Доход: +{income}💵/мин)\n"
-        else:
-            text = "🏙 <b>Твоя недвижимость:</b>\n\nУ тебя пока нет купленной недвижимости!"
-                        
-        kup = types.InlineKeyboardMarkup(row_width=1)
-        kup.add(types.InlineKeyboardButton("⬅ Назад к кликеру", callback_data="back_to_clicker"))
-        
-        bot.edit_message_text(text, chat_id=user_id, message_id=call.message.message_id, reply_markup=kup, parse_mode="HTML")
-        
-    elif call.data == 'back_to_clicker':
-        user = get_user(user_id)
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("💸 КЛИК!", callback_data="game_click"),
-            types.InlineKeyboardButton("🏙 Недвижимость", callback_data="realestate"),
-            types.InlineKeyboardButton("🛒 Магазин", callback_data="shop_business"),
-            types.InlineKeyboardButton("🛑 Версия игры", callback_data='version_business')
-        )
-        bot.edit_message_text(
-            f"💸 <b>Игра «Бизнесмен»</b>\n\nТвой баланс: {user[5]} монет 💰\nДля выхода введи /game_stop", 
-            chat_id=user_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML"
-        )
-        bot.answer_callback_query(call.id)
-    
-    elif call.data == 'version_business':
-        bot.answer_callback_query(call.id, "⚙ Версия игры 1.0")
-        
-    elif call.data == 'shop_business':
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("🏠 Купить Квартиру (500 💰)", callback_data="buy_flat"),
-            types.InlineKeyboardButton("🏢 Купить Офис (2000 💰)", callback_data="buy_office"))
-        markup.add(types.InlineKeyboardButton("⬅ Назад к кликеру", callback_data="back_to_clicker"))
-        bot.edit_message_text(
-            "🛒 <b>Магазин недвижимости</b>\n\nВыберите объект для покупки:", 
-            chat_id=user_id, message_id=call.message.message_id, reply_markup=markup, parse_mode="HTML"
-        )
-        bot.answer_callback_query(call.id)
-        
-    elif call.data == "buy_flat":
-        success = buy_property(user_id, "Квартира в центре", "flat", 500, 50)
-        if success:
-            bot.answer_callback_query(call.id, "🎉 Вы успешно купили Квартиру!", show_alert=True)
-        else:
-            bot.answer_callback_query(call.id, "❌ Недостаточно монет для покупки!", show_alert=True)
-            
-    elif call.data == "buy_office":
-        success = buy_property(user_id, "Бизнес-Офис", "office", 2000, 250)
-        if success:
-            bot.answer_callback_query(call.id, "🎉 Вы успешно купили Офис!", show_alert=True)
-        else:
-            bot.answer_callback_query(call.id, "❌ Недостаточно монет для покупки!", show_alert=True)
-    
-    # ===== ИГРА: ЛЕТНЕЕ КОЛЕСО (С АНИМАЦИЕЙ ВРАЩЕНИЯ) =====
-    elif call.data == 'start_wheel':
-        set_active_game(user_id, call.message.chat.id, 'wheel')
-        
-        # Анимация спиннера
-        frames = [
-            "🎡 [ ⬛ 🟩 🟨 ] <i>Крутим колесо...</i>",
-            "🎡 [ 🟨 ⬛ 🟩 ] <i>Ускоряемся...</i>",
-            "🎡 [ 🟩 🟨 ⬛ ] <i>Почти остановилось...</i>"
-        ]
-        for frame in frames:
-            try:
-                bot.edit_message_text(frame, chat_id=user_id, message_id=call.message.message_id, parse_mode="HTML")
-                time.sleep(0.4)
-            except:
-                pass
-        
-        cursor = conn.cursor()
-        summer_events = [
-            {"text": "🍦 Ты съел вкусное мороженое на пляже! Найдено в кармане: +20 💰", "type": "coins", "value": 20},
-            {"text": "☀️ Отличный солнечный день! Получено +40 XP", "type": "XP", "value": 40},
-            {"text": "🍋 Ты выпил лимонад! +15 💰", "type": "coins", "value": 15},
-            {"text": "🚴 Катался на велике целый день! +60 XP", "type": "XP", "value": 60},
-            {"text": "🥵 Получил солнечный удар! -15 💰", "type": "coins", "value": -15},
-            {"text": "🍉 Купил арбуз и поделился! +30 💰", "type": "coins", "value": 30},
-            {"text": "🦟 Искусали комары! -20 XP", "type": "XP", "value": -20}
-        ]
-        
-        event = random.choice(summer_events)
-        if event["type"] == "coins":
-            cursor.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (event["value"], user_id))
-        elif event["type"] == "XP":
-            cursor.execute("UPDATE users SET XP = XP + ? WHERE user_id = ?", (event["value"], user_id))
-        conn.commit()
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton('🎡 Крутить еще раз', callback_data='start_wheel'),
-            types.InlineKeyboardButton('🔙 В меню игр', callback_data='game')
-        )
-        bot.edit_message_text(
-            f"🎡 <b>ЛЕТНЕЕ КОЛЕСО УДАЧИ</b>\n\n<blockquote>{event['text']}</blockquote>", 
-            chat_id=user_id, 
-            message_id=call.message.message_id, 
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
-    
-    # ===== ИГРА: УГАДАЙ ЧИСЛО =====
-    elif call.data == 'start_number':
-        secret = random.randint(1, 10)
-        attempts = 5
-        set_active_game(user_id, call.message.chat.id, 'number', secret_number=secret, attempts=attempts)
-        
-        bot.edit_message_text(
-            f'*ИГРА: УГАДАЙ ЧИСЛО*\n\n'
-            f'🔢 Я загадал число от 1 до 10\n'
-            f'❤️ У тебя {attempts} попыток\n\n'
-            f'Введи число:',
-            chat_id=user_id, message_id=call.message.message_id,
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id)
-        
     elif call.data == "settings_id":
         global_data = openbot_id.get_id(uid)
         
@@ -4175,101 +3868,6 @@ def handle_callback(call):
         
         bot.edit_message_text(text, cid, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
     
-    # ===== ИГРА: КУБИК СУДЬБЫ =====
-    elif call.data == 'start_dice':
-        secret = random.randint(1, 6)
-        set_active_game(user_id, call.message.chat.id, 'dice', secret_number=secret, attempts=1)
-        
-        bot.edit_message_text(
-            f'🎲 *КУБИК СУДЬБЫ*\n\n'
-            f'🎲 Я загадал число от 1 до 6\n'
-            f'⚡ Угадай и получи награду!\n\n'
-            f'Введи число:',
-            chat_id=user_id, message_id=call.message.message_id,
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id)
-    
-    # ===== ИГРА: ВЗЛОМ КОДА =====
-    elif call.data == 'start_code':
-        secret_code = ''.join([str(random.randint(0, 9)) for _ in range(4)])
-        set_active_game(user_id, call.message.chat.id, 'code', attempts=8, secret_code=secret_code)
-        
-        bot.edit_message_text(
-            f'🔐 *ВЗЛОМ КОДА*\n\n'
-            f'🔐 Я загадал 4-значный код (0000-9999)\n'
-            f'❤️ У тебя 8 попыток\n'
-            f'💡 После каждой попытки получишь подсказку\n\n'
-            f'Введи код:',
-            chat_id=user_id, message_id=call.message.message_id,
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id)
-    
-    # ===== ИГРА: ТОРГОВЕЦ НА БАЗАРЕ =====
-    elif call.data == 'start_trader':
-        set_active_game(user_id, call.message.chat.id, 'trader')
-        
-        goods = [
-            {"name": "📱 Смартфон", "buy": 100, "sell": 180, "profit": 80},
-            {"name": "👕 Рубашка", "buy": 20, "sell": 25, "profit": 5},
-            {"name": "⌚ Часы", "buy": 150, "sell": 400, "profit": 250},
-            {"name": "👟 Кроссовки", "buy": 60, "sell": 100, "profit": 40},
-        ]
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for idx, good in enumerate(goods):
-            markup.add(types.InlineKeyboardButton(
-                f"{good['name']} (Куплено: {good['buy']}💰, Продать: {good['sell']}💰)",
-                callback_data=f"trader_sell_{idx}"
-            ))
-        markup.add(types.InlineKeyboardButton("🔙 В меню игр", callback_data="game"))
-        
-        bot.edit_message_text(
-            f'💰 *ТОРГОВЕЦ НА БАЗАРЕ*\n\n'
-            f'Ты купил несколько товаров на базаре.\n'
-            f'Выбери товар для продажи и получи прибыль!\n\n'
-            f'(Выбери правильно и заработаешь максимум)',
-            chat_id=user_id, message_id=call.message.message_id,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id)
-    
-    elif call.data.startswith('trader_sell_'):
-        goods = [
-            {"name": "📱 Смартфон", "buy": 100, "sell": 180, "profit": 80},
-            {"name": "👕 Рубашка", "buy": 20, "sell": 25, "profit": 5},
-            {"name": "⌚ Часы", "buy": 150, "sell": 400, "profit": 250},
-            {"name": "👟 Кроссовки", "buy": 60, "sell": 100, "profit": 40},
-        ]
-        
-        good_index = int(call.data.split('_')[2])
-        selected_good = goods[good_index]
-        profit = selected_good['profit']
-        
-        cursor = conn.cursor()
-        cursor.execute("UPDATE users SET coins = coins + ? WHERE user_id = ?", (profit, user_id))
-        conn.commit()
-        
-        delete_active_game(user_id)
-        
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton('💰 Торговать снова', callback_data='start_trader'),
-            types.InlineKeyboardButton('🔙 В меню игр', callback_data='game')
-        )
-        
-        bot.edit_message_text(
-            f'💰 *ТОРГОВЕЦ НА БАЗАРЕ*\n\n'
-            f'✅ Ты продал: {selected_good["name"]}\n'
-            f'💰 Прибыль: +{profit} монет!\n\n'
-            f'Спасибо за сделку! 🤝',
-            chat_id=user_id, message_id=call.message.message_id,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-        bot.answer_callback_query(call.id, f"Прибыль: +{profit} 💰")
     # ===== Новый игры и обнова =====
     if call.data == 'game' or call.data == 'back_to_games':
         delete_active_game(user_id)
@@ -4383,16 +3981,6 @@ def handle_callback(call):
         bot.edit_message_text(f"🎃 <b>ТЫКВЕННЫЙ ВЫБОР</b>\n\n{result}", chat_id=cid, message_id=mid, reply_markup=kb, parse_mode="HTML")
         bot.answer_callback_query(call.id)
 
-    elif call.data == 'game_guess_num':
-        secret = random.randint(1, 10)
-        set_active_game(user_id, cid, 'witch_guess', secret_number=secret, attempts=5)
-        bot.edit_message_text(
-            "🔮 <b>Пророчество Ведьмы</b>\n\nВедьма загадала число от <b>1</b> до <b>10</b>.\n"
-            "У тебя есть <b>5 попыток</b>!\n\n💬 <i>Напиши число в чат:</i>",
-            chat_id=cid, message_id=mid, parse_mode="HTML"
-        )
-        bot.answer_callback_query(call.id)
-
     # 2. Тыквы vs Черепа
     elif call.data == 'game_ttt':
         board_str = "0" * 9
@@ -4440,149 +4028,6 @@ def handle_callback(call):
         bot.edit_message_text("🎃 <b>Тыквы vs 💀 Черепа</b>\n\nТвой ход!", chat_id=cid, message_id=mid, reply_markup=build_ttt_keyboard(new_board_str), parse_mode="HTML")
         bot.answer_callback_query(call.id)
 
-    # 3. Битва с Призраком
-    elif call.data == 'game_duel':
-        set_active_game(user_id, cid, 'duel', secret_number=100, attempts=100)
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton("⚔️ Атака", callback_data="duel_act_attack"),
-            types.InlineKeyboardButton("🛡️ Щит", callback_data="duel_act_defend"),
-            types.InlineKeyboardButton("🧪 Зелье", callback_data="duel_act_heal"),
-            types.InlineKeyboardButton("🏃 Сбежать", callback_data="back_to_games")
-        )
-        bot.edit_message_text("⚰️ <b>Битва с Призраком</b>\n\n❤️ Твое HP: 100 | 👻 Призрак: 100", chat_id=cid, message_id=mid, reply_markup=markup, parse_mode="HTML")
-        bot.answer_callback_query(call.id)
-
-    elif call.data.startswith('duel_act_'):
-        game_data = get_active_game(user_id)
-        if not game_data or game_data[0] != 'duel':
-            bot.answer_callback_query(call.id, "Битва окончена!", show_alert=True)
-            return
-        action = call.data.split('_')[2]
-        ghost_hp, player_hp = game_data[1], game_data[2]
-        text_log = ""
-        if action == "attack":
-            dmg = random.randint(20, 35)
-            ghost_hp -= dmg
-            text_log += f"⚔️ Урон призраку: <b>{dmg}</b>\n"
-        elif action == "defend":
-            text_log += "🛡️ Ты встал в блок!\n"
-        elif action == "heal":
-            heal = random.randint(15, 30)
-            player_hp = min(100, player_hp + heal)
-            text_log += f"🧪 Восстановлено <b>{heal} HP</b>!\n"
-
-        if ghost_hp <= 0:
-            add_coins(user_id, 75)
-            add_xp(user_id, 50)
-            try_drop_candy(user_id, cid)
-            delete_active_game(user_id)
-            bot.edit_message_text("🏆 <b>Победа!</b> Ты изгнал Призрака!\n💰 +75 монет, +50 XP", chat_id=cid, message_id=mid, parse_mode="HTML")
-            return
-
-        ghost_dmg = random.randint(10, 25) // (2 if action == "defend" else 1)
-        player_hp -= ghost_dmg
-        text_log += f"👻 Призрак нанес <b>{ghost_dmg}</b> урона!"
-
-        if player_hp <= 0:
-            delete_active_game(user_id)
-            bot.edit_message_text("💀 <b>Ты пал в бою...</b>", chat_id=cid, message_id=mid, parse_mode="HTML")
-            return
-
-        update_game_state(user_id, secret_number=ghost_hp, attempts=player_hp)
-        markup = types.InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            types.InlineKeyboardButton("⚔️ Атака", callback_data="duel_act_attack"),
-            types.InlineKeyboardButton("🛡️ Щит", callback_data="duel_act_defend"),
-            types.InlineKeyboardButton("🧪 Зелье", callback_data="duel_act_heal"),
-            types.InlineKeyboardButton("🏃 Сбежать", callback_data="back_to_games")
-        )
-        bot.edit_message_text(f"⚰️ <b>Битва с Призраком</b>\n\n{text_log}\n\n❤️ HP: {player_hp} | 👻 Призрак: {ghost_hp}", chat_id=cid, message_id=mid, reply_markup=markup, parse_mode="HTML")
-        bot.answer_callback_query(call.id)
-
-    # 4. Сладость или Пакость
-    elif call.data == 'game_trick_or_treat':
-        markup = types.InlineKeyboardMarkup(row_width=3)
-        markup.add(
-            types.InlineKeyboardButton("🎃 #1", callback_data="tot_pick_1"),
-            types.InlineKeyboardButton("🎃 #2", callback_data="tot_pick_2"),
-            types.InlineKeyboardButton("🎃 #3", callback_data="tot_pick_3")
-        )
-        markup.add(types.InlineKeyboardButton("🔙 В меню", callback_data="back_to_games"))
-        bot.edit_message_text("🍬 Выбери тыкву!", chat_id=cid, message_id=mid, reply_markup=markup)
-        bot.answer_callback_query(call.id)
-
-    elif call.data.startswith('tot_pick_'):
-        outcomes = [
-            ("🍬 <b>Сладость!</b> Кулек конфет!", 35, 60),
-            ("👻 <b>Пакость!</b> Летучая мышь утащила монеты!", -15, 30),
-            ("🎁 <b>Джекпот!</b> Магическая тыква!", 60, 10)
-        ]
-
-        res = random.choices(
-            outcomes,
-            weights=[60, 30, 10],
-            k=1
-        )[0]
-
-        add_coins(user_id, res[1])
-
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton(
-                "🔄 Еще раз",
-                callback_data="game_trick_or_treat"
-            ),
-            types.InlineKeyboardButton(
-                "🔙 В меню",
-                callback_data="back_to_games"
-            )
-        )
-
-        bot.edit_message_text(
-            f"{res[0]}\n"
-            f"Результат: <b>{res[1]:+} монет</b>",
-            chat_id=cid,
-            message_id=mid,
-            reply_markup=markup,
-            parse_mode="HTML"
-        )
-
-        bot.answer_callback_query(call.id)
-        
-    # 5. Раскопки на Кладбище
-    elif call.data == 'game_graveyard':
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("⛏️ Копать", callback_data="graveyard_dig"),
-            types.InlineKeyboardButton("🔙 В меню", callback_data="back_to_games")
-        )
-        bot.edit_message_text("🪦 <b>Раскопки на Кладбище</b>", chat_id=cid, message_id=mid, reply_markup=markup, parse_mode="HTML")
-        bot.answer_callback_query(call.id)
-
-    elif call.data == 'graveyard_dig':
-        loot_type = random.choices(['coins', 'item', 'nothing'], weights=[60, 25, 15])[0]
-        if loot_type == 'coins':
-            found = random.randint(15, 50)
-            add_coins(user_id, found)
-            msg = f"💰 Выкопал <b>+{found} монет</b>!"
-        elif loot_type == 'item':
-            item = random.choice(['💀', '🦴', '🔮', '📜'])
-            add_to_inventory(user_id, item)
-            msg = f"✨ Выкопал артефакт <b>{item}</b>!"
-        else:
-            msg = "🧹 Ничего не нашёл..."
-
-        # Шанс найти конфеты во время раскопок
-        try_drop_candy(user_id, call.id)
-
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            types.InlineKeyboardButton("⛏️ Копать ещё", callback_data="graveyard_dig"),
-            types.InlineKeyboardButton("🔙 В меню", callback_data="back_to_games")
-        )
-        bot.edit_message_text(f"🪦 <b>Раскопки</b>\n\n{msg}", chat_id=cid, message_id=mid, reply_markup=markup, parse_mode="HTML")
-        bot.answer_callback_query(call.id)
 
 # ============ ОПЛАТА STARS: подтверждение и выдача товара ============
 @bot.pre_checkout_query_handler(func=lambda query: True)
@@ -4659,8 +4104,6 @@ reply_selected_emoji = {}
             "📦 Мои лоты", "⬅ Рынок",
             "◀️ Предыдущая страница рынка", "Следующая страница рынка ▶️",
             "⬅ Предыдущие кейсы", "Следующие кейсы ➡",
-            "🔮 Пророчество Ведьмы", "🎃 Тыквы vs 💀 Черепа",
-            "⚰️ Битва с Призраком", "🍬 Сладость или Пакость", "🪦 Раскопки на Кладбище",
             "🔐 Взлом замка", "🗝️ Испытание ключей", "👻 Охота на тень",
             "🧪 Ведьмино зелье", "🎃 Тыквенный выбор", "❌⭕ Крестики-нолики",
             "⌨ Переключить вид кнопок: Inline", "⌨ Переключить вид кнопок: Reply",
@@ -4837,7 +4280,7 @@ def handle_all_reply_menus(message):
         selected = text[2:].rsplit(" — ", 1)[0]
         title_key = next((k for k, (name, price) in HALLOWEEN_TITLES.items() if name == selected), None)
         if title_key:
-            ok, msg = buy_halloween_title(uid, title_key)
+            _, msg = buy_halloween_title(uid, title_key)
             bot.send_message(chat_id, halloween_titles_text(uid, msg), reply_markup=halloween_titles_reply(), parse_mode="HTML")
             return
 
@@ -5048,7 +4491,7 @@ def handle_all_reply_menus(message):
     # Кейсы
     for case_key, c_info in CASES.items():
         if text.startswith(f"🛒 {c_info['name']} —"):
-            ok, msg = buy_case(uid, case_key)
+            _, msg = buy_case(uid, case_key)
             bot.send_message(chat_id, f"{msg}\n\n{balance_line(uid)}", reply_markup=cases_menu_reply(uid, reply_case_page.get(uid, 0)), parse_mode="HTML")
             return
         if text.startswith(f"🔓 Открыть {c_info['name']} ("):
@@ -5230,59 +4673,8 @@ def handle_messages(message):
 
     game_type = game_data[0]
 
-    # ===== УГАДАЙ ЧИСЛО =====
-    if game_type == 'number':
-        secret, attempts = game_data[1], game_data[2]
-
-        try:
-            guess = int(message.text.strip())
-        except ValueError:
-            bot.reply_to(message, "🔢 Пожалуйста, введи число!")
-            return
-
-        if not 1 <= guess <= 10:
-            bot.reply_to(message, "🔢 Число должно быть от 1 до 10!")
-            return
-
-        if guess == secret:
-            add_coins(user_id, 50)
-            delete_active_game(user_id)
-            bot.reply_to(message, f"🎉 <b>УРА!</b> Ты угадал число {secret}!\n💰 +50 монет", parse_mode="HTML")
-        else:
-            attempts -= 1
-            if attempts <= 0:
-                delete_active_game(user_id)
-                bot.reply_to(message, f"☠ <b>Попытки закончились!</b>\nЧисло было: {secret}", parse_mode="HTML")
-            else:
-                update_game_attempts(user_id, attempts)
-                hint = "меньше" if guess > secret else "больше"
-                bot.reply_to(message, f"🔢 Не угадал! Моё число {hint}.\n❤️ Осталось: {attempts}")
-
-    # ===== КУБИК =====
-    elif game_type == 'dice':
-        secret = game_data[1]
-
-        try:
-            guess = int(message.text.strip())
-        except ValueError:
-            bot.reply_to(message, "🎲 Введи число от 1 до 6!")
-            return
-
-        if not 1 <= guess <= 6:
-            bot.reply_to(message, "🎲 Число должно быть от 1 до 6!")
-            return
-
-        if guess == secret:
-            add_coins(user_id, 100)
-            add_xp(user_id, 25)
-            bot.reply_to(message, f"🎲 <b>УГАДАЛ!</b>\n💰 +100 монет\n✨ +25 XP", parse_mode="HTML")
-        else:
-            bot.reply_to(message, f"❌ Неудача! Было число {secret}")
-
-        delete_active_game(user_id)
-
     # ===== ВЗЛОМ ЗАМКА =====
-    elif game_type == 'lock':
+    if game_type == 'lock':
         secret_code, attempts = game_data[3], game_data[2]
         guess = message.text.strip()
 
@@ -5306,58 +4698,7 @@ def handle_messages(message):
                 matched = count_matched_digits(secret_code, guess)
                 bot.reply_to(message, f"❌ Неверно!\n💡 Цифр на своих местах: {matched}\n❤️ Осталось попыток: {attempts}")
 
-    # ===== ВЗЛОМ КОДА =====
-    elif game_type == 'code':
-        secret_code, attempts = game_data[3], game_data[2]
-        guess = message.text.strip()
 
-        if len(guess) != 4 or not guess.isdigit():
-            bot.reply_to(message, "🔐 Введи 4-значный код!")
-            return
-
-        if guess == secret_code:
-            add_coins(user_id, 150)
-            add_xp(user_id, 50)
-            delete_active_game(user_id)
-            bot.reply_to(message, "🎉 <b>КОД ВЗЛОМАН!</b>\n💰 +150 монет\n✨ +50 XP", parse_mode="HTML")
-        else:
-            attempts -= 1
-
-            if attempts <= 0:
-                delete_active_game(user_id)
-                bot.reply_to(message, f"☠ <b>КОД НЕ ВЗЛОМАН!</b>\nКод был: {secret_code}", parse_mode="HTML")
-            else:
-                update_game_attempts(user_id, attempts)
-                matched = count_matched_digits(secret_code, guess)
-                bot.reply_to(message, f"❌ Неправильно!\n💡 Совпадает цифр: {matched}\n❤️ Осталось: {attempts}")
-
-    # ===== ВЕДЬМИНО ЧИСЛО =====
-    elif game_type == 'witch_guess':
-        secret, attempts = game_data[1], game_data[2]
-
-        try:
-            guess = int(message.text.strip())
-        except ValueError:
-            bot.reply_to(message, "🔮 Введи число!")
-            return
-
-        if guess == secret:
-            add_coins(user_id, 50)
-            add_xp(user_id, 30)
-            delete_active_game(user_id)
-            bot.reply_to(message, f"🎉 <b>Угадал число {secret}!</b>\n💰 +50 монет\n✨ +30 XP", parse_mode="HTML")
-        else:
-            attempts -= 1
-
-            if attempts <= 0:
-                delete_active_game(user_id)
-                bot.reply_to(message, f"☠ <b>Попытки закончились!</b>\nЧисло было: <b>{secret}</b>", parse_mode="HTML")
-            else:
-                update_game_state(user_id, secret_number=secret, attempts=attempts)
-                hint = "БОЛЬШЕ ⬆️" if secret > guess else "МЕНЬШЕ ⬇️"
-                bot.reply_to(message, f"🔮 Загаданное число: <b>{hint}</b>\n❤️ Попыток: <b>{attempts}</b>", parse_mode="HTML")
-                
-# ... весь остальной код ...
 # ==============================
 # Глобальный обработчик ошибок
 # ==============================

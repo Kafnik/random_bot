@@ -24,7 +24,7 @@ MAINTENANCE_MODE = False
 DEVELOPER_CHAT_ID = 6265920670 # Замените на свой ID
 # ========================
 
-TOKEN = "8493714047:AAGAVFDc_nvDR2S6LLpgDBhx85dikxJVMMY" # Токен бота 
+TOKEN = "TOKEN" # Токен бота 
 
 bot = telebot.TeleBot(TOKEN, use_class_middlewares=True)
 

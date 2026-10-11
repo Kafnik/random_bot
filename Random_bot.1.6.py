@@ -1,5 +1,5 @@
 import telebot
-import random_bot.openbot_id as openbot_id
+import openbot_id
 import sqlite3
 import random
 import time
@@ -24,7 +24,7 @@ MAINTENANCE_MODE = False
 DEVELOPER_CHAT_ID = 6265920670 # Замените на свой ID
 # ========================
 
-TOKEN = "Token" # Токен бота 
+TOKEN = "8493714047:AAGAVFDc_nvDR2S6LLpgDBhx85dikxJVMMY" # Токен бота 
 
 bot = telebot.TeleBot(TOKEN, use_class_middlewares=True)
 
@@ -350,6 +350,13 @@ def get_user_settings(user_id):
         show_id = res[2] if res[2] is not None else 1
         return kb_type, notifications, show_id
     return 'reply', 1, 1
+
+def mark_reply_mode(user_id):
+    """Человек нажал кнопку reply-клавиатуры — значит она реально активна. Синхронизируем настройку."""
+    if get_user_settings(user_id)[0] != 'reply':
+        c = conn.cursor()
+        c.execute("UPDATE users SET kb_type = 'reply' WHERE user_id = ?", (user_id,))
+        conn.commit()
 
 def toggle_user_setting(user_id, setting_name):
     kb_type, notifications, show_id = get_user_settings(user_id)
@@ -977,10 +984,20 @@ def build_cases_keyboard(user_id, page=0):
     return kb
 
 
+def balance_line(user_id):
+    """Строка с балансом: монеты и конфеты."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(coins, 0), COALESCE(candies, 0) FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    coins, candies = (int(row[0]), int(row[1])) if row else (0, 0)
+    return f"💼 Твой баланс: <b>{_fmt(coins)}</b> 💰 · <b>{_fmt(candies)}</b> 🍬"
+
 def cases_text(user_id, page=0):
     case_items, page, total_pages = get_cases_page(page)
     lines = [
         "🎁 <b>КЕЙСЫ</b>",
+        "",
+        balance_line(user_id),
         "",
         "Открывай кейсы и получай 💰 монеты, ⭐ XP, 🍬 конфеты и 🎒 эмодзи.",
         f"📄 Страница <b>{page + 1}/{total_pages}</b>",
@@ -1244,11 +1261,17 @@ def inventory_item_reply(user_id, emoji):
     if equipped: text += "\n\n👕 <b>Сейчас надето</b>"
     return text, markup
 
+reply_my_lots = {}  # True, если пользователь сейчас на экране «Мои лоты»
+
 def market_menu_reply(user_id, page=1):
+    reply_my_lots.pop(user_id, None)
     lots,total=get_market_lots(page); total_pages=max(1,(total+MARKET_PAGE_SIZE-1)//MARKET_PAGE_SIZE); page=min(max(1,page),total_pages)
     markup=types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True); lines=["🏪 <b>РЫНОК ЭМОДЗИ</b>",f"📄 Страница <b>{page}/{total_pages}</b>",""]
     for lot_id,seller_id,emoji,price,username,first_name in lots:
-        seller=market_seller_name(username,first_name); lines.append(f"#{lot_id} {emoji} — <b>{price:,} 🪙</b> — {seller}".replace(","," ")); markup.add(types.KeyboardButton(f"🛒 Купить {emoji} за {price:,} 🪙 · #{lot_id}".replace(","," ")))
+        seller="ты" if seller_id==user_id else market_seller_name(username,first_name)
+        lines.append(f"#{lot_id} {emoji} — <b>{price:,} 🪙</b> — {seller}".replace(",", " "))
+        if seller_id==user_id: markup.add(types.KeyboardButton(f"❌ Снять лот #{lot_id} {emoji} · {price:,} 🪙".replace(",", " ")))
+        else: markup.add(types.KeyboardButton(f"🛒 Купить {emoji} за {price:,} 🪙 · #{lot_id}".replace(",", " ")))
     if not lots: lines.append("Пока нет выставленных эмодзи.")
     nav=[]
     if page>1: nav.append(types.KeyboardButton("◀️ Предыдущая страница рынка"))
@@ -1258,6 +1281,7 @@ def market_menu_reply(user_id, page=1):
     return "\n".join(lines),markup
 
 def my_market_reply(user_id):
+    reply_my_lots[user_id]=True
     cursor=conn.cursor(); cursor.execute("SELECT lot_id,item_value,price FROM auction WHERE seller_id=? AND item_type='emoji' ORDER BY lot_id DESC",(user_id,)); lots=cursor.fetchall()
     markup=types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
     for lot_id,emoji,price in lots: markup.add(types.KeyboardButton(f"❌ Снять лот #{lot_id} {emoji}"))
@@ -1294,6 +1318,22 @@ HALLOWEEN_TITLES = {
     "halloween_legend": ("🦇 Легенда Хэллоуина", 100000),
 }
 
+# Хэллоуинские титулы должны отображаться в профиле
+for _key, (_name, _price) in HALLOWEEN_TITLES.items():
+    PROFILE_TITLES[_key] = _name
+
+def halloween_titles_text(user_id, note=None):
+    cursor = conn.cursor()
+    cursor.execute("SELECT COALESCE(coins, 0), profile_title FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    coins = int(row[0]) if row else 0
+    current = PROFILE_TITLES.get(row[1] if row else "none", "Без титула")
+    text = "🏆 <b>ТИТУЛЫ ХЭЛЛОУИНА</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    if note:
+        text += f"{note}\n\n"
+    text += f"💰 Твой баланс: <b>{_fmt(coins)}</b> 🪙\n🎖 Текущий титул: <b>{current}</b>\n\nВыбери титул:"
+    return text
+
 def halloween_titles_menu():
     markup = types.InlineKeyboardMarkup(row_width=1)
     for key, (name, price) in HALLOWEEN_TITLES.items():
@@ -1307,11 +1347,18 @@ def buy_halloween_title(user_id, title_key):
         return False, "❌ Такой титул не найден."
     name, price = item
     cursor = conn.cursor()
-    cursor.execute("SELECT coins FROM users WHERE user_id=?", (user_id,))
+    cursor.execute("SELECT COALESCE(coins, 0), profile_title FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
-    if not row or int(row[0] or 0) < price:
-        return False, f"❌ Нужно {price:,} 🪙.".replace(',', ' ')
-    cursor.execute("UPDATE users SET coins=coins-?, profile_title=? WHERE user_id=?", (price, title_key, user_id))
+    if not row:
+        return False, "❌ Профиль не найден."
+    if row[1] == title_key:
+        return False, f"✅ Титул {name} у тебя уже установлен."
+    if int(row[0] or 0) < price:
+        return False, f"❌ Не хватает монет. Нужно {price:,} 🪙.".replace(',', ' ')
+    cursor.execute("UPDATE users SET coins=coins-?, profile_title=? WHERE user_id=? AND coins>=?", (price, title_key, user_id, price))
+    if cursor.rowcount != 1:
+        conn.rollback()
+        return False, "❌ Не удалось купить титул."
     conn.commit()
     return True, f"🏆 Титул {name} куплен и установлен!"
 
@@ -1435,6 +1482,11 @@ def game_mune_reply():
     markup.add(types.KeyboardButton("🎃 Тыквенный выбор"), types.KeyboardButton("❌⭕ Крестики-нолики"))
     markup.add(types.KeyboardButton("⬅ Главное меню"))
     return markup
+
+def game_menu_markup(user_id):
+    """Меню игр в том виде кнопок, который выбран у пользователя."""
+    kb_type, _, _ = get_user_settings(user_id)
+    return game_mune_reply() if kb_type == 'reply' else game_mune()
 
 def game_action_reply(action=None):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -1749,6 +1801,29 @@ def get_market_lots(page=1):
 
     return cursor.fetchall(), total
 
+
+def notify_market_sale(seller_id, buyer_id, emoji, price):
+    """Сообщает продавцу, что его эмодзи купили (если у него включены уведомления)."""
+    try:
+        if get_user_settings(seller_id)[1] != 1:
+            return
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, first_name FROM users WHERE user_id = ?", (buyer_id,))
+        row = cursor.fetchone()
+        buyer = market_seller_name(row[0], row[1]) if row else "Игрок"
+        cursor.execute("SELECT COALESCE(coins, 0) FROM users WHERE user_id = ?", (seller_id,))
+        bal = cursor.fetchone()
+        balance = int(bal[0]) if bal else 0
+        bot.send_message(
+            seller_id,
+            f"💰 <b>Твой эмодзи купили!</b>\n\n"
+            f"{emoji} — продан за <b>{_fmt(price)}</b> 🪙\n"
+            f"👤 Покупатель: {buyer}\n\n"
+            f"💼 Твой баланс: <b>{_fmt(balance)}</b> 🪙",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"[MARKET NOTIFY ERROR] {e}")
 
 def market_seller_name(username, first_name):
     if username:
@@ -2683,6 +2758,7 @@ def get_profile_text(user_id):
 ⭐ <b>Уровень:</b> {user[6]}
 ✨ <b>Опыт:</b> {user[7]}
 💰 <b>Монеты:</b> {user[5]} 💰
+🍬 <b>Конфеты:</b> {get_candies(user_id)} 🍬
 ━━━━━━━━━━━━━━━━━━
 """
 
@@ -3161,7 +3237,7 @@ def rnd_house_text(user_id):
         f"📦 Накоплено: <b>{pending}</b> из {cap}\n"
     )
     if level < HOUSE_MAX_LEVEL:
-        text += f"\n🔨 Улучшение: <b>{_fmt(house_cost(level))}</b> 🪙"
+        text += f"\n🔨 Улучшение: <b>{_fmt(house_cost(level))}</b> 💰"
     else:
         text += "\n⭐ Максимальный уровень!"
     return text
@@ -3269,6 +3345,7 @@ def handle_rnd_reply(message):
     uid = message.from_user.id
     chat_id = message.chat.id
     t = message.text
+    mark_reply_mode(uid)
     if check_ban(uid) is not None:
         return
     delete_active_game(uid)
@@ -3373,7 +3450,7 @@ def handle_callback(call):
         bot.answer_callback_query(call.id)
 
     elif call.data == 'halloween_titles':
-        bot.edit_message_text("🏆 <b>ТИТУЛЫ ХЭЛЛОУИНА</b>\n\nВыбери титул:", chat_id=cid, message_id=mid, reply_markup=halloween_titles_menu(), parse_mode="HTML")
+        bot.edit_message_text(halloween_titles_text(user_id), chat_id=cid, message_id=mid, reply_markup=halloween_titles_menu(), parse_mode="HTML")
         bot.answer_callback_query(call.id)
 
     elif call.data.startswith('buy_title_'):
@@ -3381,7 +3458,7 @@ def handle_callback(call):
         ok, msg = buy_halloween_title(user_id, key)
         bot.answer_callback_query(call.id, msg, show_alert=True)
         if ok:
-            bot.edit_message_text("🏆 <b>ТИТУЛЫ ХЭЛЛОУИНА</b>\n\n" + msg, chat_id=cid, message_id=mid, reply_markup=halloween_titles_menu(), parse_mode="HTML")
+            bot.edit_message_text(halloween_titles_text(user_id, msg), chat_id=cid, message_id=mid, reply_markup=halloween_titles_menu(), parse_mode="HTML")
         
     elif call.data == 'profile':
         user = get_user(user_id)
@@ -3420,6 +3497,7 @@ def handle_callback(call):
 ⭐ <b>Уровень:</b> {user[6]}
 ✨ <b>Опыт:</b> {user[7]}
 💰 <b>Монеты:</b> {user[5]} 💰
+🍬 <b>Конфеты:</b> {get_candies(user_id)} 🍬
 ━━━━━━━━━━━━━━━━━━━
 """
             markup = types.InlineKeyboardMarkup(row_width=1)
@@ -3584,6 +3662,7 @@ def handle_callback(call):
             f"🎉 Куплено {emoji} за {price} 🪙!",
             show_alert=True
         )
+        notify_market_sale(seller_id, user_id, emoji, price)
         show_market(cid, mid, user_id, page=1)
 
     elif call.data.startswith('market_cancel_'):
@@ -3730,7 +3809,8 @@ def handle_callback(call):
             f"🎁 <b>КЕЙС ОТКРЫТ!</b>\n\n"
             f"{c_info['name']}\n\n"
             f"✨ <b>ТЕБЕ ВЫПАЛО:</b>\n{msg}\n\n"
-            f"📦 Осталось таких кейсов: <b>{count_left}</b>",
+            f"📦 Осталось таких кейсов: <b>{count_left}</b>\n\n"
+            f"{balance_line(user_id)}",
             chat_id=cid,
             message_id=mid,
             reply_markup=build_cases_keyboard(user_id, page),
@@ -3870,7 +3950,9 @@ def handle_callback(call):
         
     elif call.data == 'settings_user':
         bot.edit_message_text(
-            "⚙ **Настройки профиля:**\n\nВыберите нужный параметр:",
+            "⚙ **Настройки профиля:**\n\n"
+            + ("⌨ Сейчас включены: **Reply-кнопки**" if get_user_settings(user_id)[0] == 'reply' else "⌨ Сейчас включены: **Inline-кнопки**")
+            + "\n\nВыберите нужный параметр:",
             chat_id=user_id,
             message_id=call.message.message_id,
             reply_markup=settings_menu(user_id),
@@ -4569,7 +4651,7 @@ reply_selected_emoji = {}
             "🔮 Жуткие Игры", "👤 Профиль", "🧹 Лавка Ужасов", "🎒 Инвентарь",
             "🏪 Рынок", "🍬 Жуткий сундук", "⚙️ Настройки", "⚙ Настройки",
             "⬅ Главное меню", "⬅ В главное меню",
-            "🎁 Кейсы", "⭐ Магазин Stars", "⬅ Магазин",
+            "🎁 Кейсы", "🏆 Титулы", "⭐ Магазин Stars", "⬅ Магазин",
             "💰 10 000 000 монет — 100 ⭐", "🍬 25 конфет — 50 ⭐",
             "⭐ Прокачать до 20 уровня — 150 ⭐",
             "🍬 Открыть Жуткий сундук",
@@ -4591,12 +4673,14 @@ reply_selected_emoji = {}
             "❌ Снять лот #", "🛒 Купить ",
         ))
         or (" ×" in message.text and " · " in message.text)
+        or (message.text.startswith("🏆 ") and message.text.endswith(" 🪙"))
     )
 ))
 def handle_all_reply_menus(message):
     uid = message.from_user.id
     chat_id = message.chat.id
     text = message.text or ""
+    mark_reply_mode(uid)
 
     # Главное меню
     if text in ("⬅ Главное меню", "⬅ В главное меню"):
@@ -4746,7 +4830,7 @@ def handle_all_reply_menus(message):
         return
 
     if text == "🏆 Титулы":
-        bot.send_message(chat_id, "🏆 <b>ТИТУЛЫ ХЭЛЛОУИНА</b>\n\nВыбери титул:", reply_markup=halloween_titles_reply(), parse_mode="HTML")
+        bot.send_message(chat_id, halloween_titles_text(uid), reply_markup=halloween_titles_reply(), parse_mode="HTML")
         return
 
     if text.startswith("🏆 ") and " — " in text and text.endswith(" 🪙"):
@@ -4754,7 +4838,7 @@ def handle_all_reply_menus(message):
         title_key = next((k for k, (name, price) in HALLOWEEN_TITLES.items() if name == selected), None)
         if title_key:
             ok, msg = buy_halloween_title(uid, title_key)
-            bot.send_message(chat_id, msg, reply_markup=halloween_titles_reply())
+            bot.send_message(chat_id, halloween_titles_text(uid, msg), reply_markup=halloween_titles_reply(), parse_mode="HTML")
             return
 
     # Сундук
@@ -4930,6 +5014,7 @@ def handle_all_reply_menus(message):
         conn.commit()
         market_text, markup = market_menu_reply(uid, reply_market_page.get(uid, 1))
         bot.send_message(chat_id, f"🎉 Куплено {emoji} за <b>{price:,}</b> 🪙!".replace(",", " "), reply_markup=markup, parse_mode="HTML")
+        notify_market_sale(seller_id, uid, emoji, price)
         return
 
     if text.startswith("❌ Снять лот #"):
@@ -4953,22 +5038,25 @@ def handle_all_reply_menus(message):
             return
         cursor.execute("INSERT INTO inventory (user_id,item_type,item_value,is_active) VALUES (?,'emoji',?,0)", (uid, emoji))
         conn.commit()
-        market_text, markup = my_market_reply(uid)
-        bot.send_message(chat_id, f"↩️ {emoji} возвращён в инвентарь.", reply_markup=markup)
+        if reply_my_lots.get(uid):
+            market_text, markup = my_market_reply(uid)
+        else:
+            market_text, markup = market_menu_reply(uid, reply_market_page.get(uid, 1))
+        bot.send_message(chat_id, f"↩️ {emoji} возвращён в инвентарь.\n\n{market_text}", reply_markup=markup, parse_mode="HTML")
         return
 
     # Кейсы
     for case_key, c_info in CASES.items():
         if text.startswith(f"🛒 {c_info['name']} —"):
             ok, msg = buy_case(uid, case_key)
-            bot.send_message(chat_id, msg, reply_markup=cases_menu_reply(uid, reply_case_page.get(uid, 0)))
+            bot.send_message(chat_id, f"{msg}\n\n{balance_line(uid)}", reply_markup=cases_menu_reply(uid, reply_case_page.get(uid, 0)), parse_mode="HTML")
             return
         if text.startswith(f"🔓 Открыть {c_info['name']} ("):
             result, msg = open_case(uid, case_key)
             if result is None:
-                bot.send_message(chat_id, msg, reply_markup=cases_menu_reply(uid, reply_case_page.get(uid, 0)))
+                bot.send_message(chat_id, f"{msg}\n\n{balance_line(uid)}", reply_markup=cases_menu_reply(uid, reply_case_page.get(uid, 0)), parse_mode="HTML")
             else:
-                bot.send_message(chat_id, f"🎁 <b>КЕЙС ОТКРЫТ!</b>\n\n{c_info['name']}\n\n✨ {msg}\n\n📦 Осталось: <b>{get_case_count(uid, case_key)}</b>", reply_markup=cases_menu_reply(uid, reply_case_page.get(uid, 0)), parse_mode="HTML")
+                bot.send_message(chat_id, f"🎁 <b>КЕЙС ОТКРЫТ!</b>\n\n{c_info['name']}\n\n✨ {msg}\n\n📦 Осталось: <b>{get_case_count(uid, case_key)}</b>\n\n{balance_line(uid)}", reply_markup=cases_menu_reply(uid, reply_case_page.get(uid, 0)), parse_mode="HTML")
             return
 
     if text in ("⬅ Предыдущие кейсы", "Следующие кейсы ➡"):
@@ -5016,6 +5104,7 @@ def handle_reply_game_actions(message):
     uid = message.from_user.id
     chat_id = message.chat.id
     text = message.text
+    mark_reply_mode(uid)
     game = get_active_game(uid)
 
     if text == "⬅ Игры":
@@ -5206,12 +5295,12 @@ def handle_messages(message):
             add_xp(user_id, 40)
             add_candies(user_id, 3, source='lock')
             delete_active_game(user_id)
-            bot.reply_to(message, "🔓 <b>ЗАМОК ВЗЛОМАН!</b>\n💰 +100 монет\n✨ +40 XP\n🍬 +3 конфеты", parse_mode="HTML", reply_markup=game_mune_reply())
+            bot.reply_to(message, "🔓 <b>ЗАМОК ВЗЛОМАН!</b>\n💰 +100 монет\n✨ +40 XP\n🍬 +3 конфеты", parse_mode="HTML", reply_markup=game_menu_markup(user_id))
         else:
             attempts -= 1
             if attempts <= 0:
                 delete_active_game(user_id)
-                bot.reply_to(message, f"🔒 <b>Замок не поддался!</b>\nКод был: <code>{secret_code}</code>", parse_mode="HTML", reply_markup=game_mune_reply())
+                bot.reply_to(message, f"🔒 <b>Замок не поддался!</b>\nКод был: <code>{secret_code}</code>", parse_mode="HTML", reply_markup=game_menu_markup(user_id))
             else:
                 update_game_attempts(user_id, attempts)
                 matched = count_matched_digits(secret_code, guess)

@@ -1,13 +1,18 @@
-# 🎲 Random Bot 1.6 — «Жуткие игры» 🎃
+# 🎲 Random Bot 1.6.1 — «Жуткие игры» 🎃
 
 ![Python](https://img.shields.io/badge/Python-3.13.7+-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Telegram](https://img.shields.io/badge/Telegram-Bot-26A5E4?style=for-the-badge&logo=telegram&logoColor=white)
-![Version](https://img.shields.io/badge/Version-1.5.1-FF6B6B?style=for-the-badge)
+![Version](https://img.shields.io/badge/Version-1.6.1-FF6B6B?style=for-the-badge)
 ![Статус](https://img.shields.io/badge/статус-Работает-green?style=for-the-badge)
 [![Установить](https://img.shields.io/badge/📦-Установить_бота-blue?style=for-the-badge)](https://github.com/Kafnik/random_bot/releases/tag/v.1.6)
 
 
 Telegram-бот на Python (**pyTelegramBotAPI**) с экономикой, коллекцией эмодзи, рынком между игроками и хэллоуинским событием **«Рандом-мир»**. Часть сети ботов **Openbot.Ai**: права и баны берутся из общего аккаунта **OpenBot ID**.
+
+# Патч 1.6.1
+Мы сделали библиотеку но доступ есть только разработчикам Openbot_Ai, нужен api для доступа к библиотеке скоро мы решил этот вопрос пока он доступен для разработчиков.
+И сделали чтобы бот не писал при выключеных уведомлениях и вы могли просто ввести /logs и бот скажет последнии логи.
+
 
 ---
 
@@ -84,6 +89,8 @@ Telegram-бот на Python (**pyTelegramBotAPI**) с экономикой, ко
 | `/sendall` | рассылка всем игрокам |
 | `/MODE_true`, `/MODE_false` | включить и выключить тех. обслуживание |
 | `/refund` | вернуть платёж в Stars |
+| `/logs` | показывает последние логи |
+| `/test_error` | тестирует ошибки (можно вырезать из бота) |
 
 ---
 

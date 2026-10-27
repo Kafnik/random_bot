@@ -1,27 +1,72 @@
 import telebot
-import openbot_id
+import openbot_api
 import sqlite3
 import random
 import time
 import traceback
+import logging
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 import html
 from telebot import apihelper
 from datetime import datetime
 from telebot import types
 import halloween_random_db as halloween_db
-from telebot.handler_backends import BaseMiddleware, CancelUpdate # отдельная база события Random Bot (файл halloween_random_db.py): все её изменения идут только через этот модуль
+from telebot.handler_backends import BaseMiddleware, CancelUpdate
+from openbot_api import ROLE # отдельная база события Random Bot (файл halloween_random_db.py): все её изменения идут только через этот модуль
 
 
 # ======= Настройка ======
-openbot_id.init_id_system()
 DB_NAME = "Random_bot.1.6.db"
 HALLOWEEN_DB_NAME = "Halloween_random.db"  # база события Random Bot (у Master Bot своя: Halloween_event.db)
 DEVELOPER_CHAT_ID = 1234567890 # Замените на свой ID
 # ========================
-
 TOKEN = "Token" # Токен бота 
 
 bot = telebot.TeleBot(TOKEN, use_class_middlewares=True)
+
+openbot = openbot_api.OpenbotAPI(api_key='Token', bot=bot) # Токен который выдал разработчик ну или используйте openbot_id.py
+
+@bot.message_handler(commands=['test_error'])
+def test_error(message):
+    # Команда доступна только разработчику
+    if message.from_user.id != DEVELOPER_CHAT_ID:
+        return
+
+    bot.reply_to(message, "🧪 Проверяю обработчик ошибок...")
+
+    # Специально вызываем ошибку
+    raise RuntimeError("Тестовая ошибка! Проверка GlobalExceptionHandler.")
+
+
+@bot.message_handler(commands=['logs'])
+def show_error_logs(message):
+    if message.chat.type != 'private' or message.from_user.id != DEVELOPER_CHAT_ID:
+        return
+
+    try:
+        if not LOG_FILE.exists() or LOG_FILE.stat().st_size == 0:
+            bot.reply_to(message, "✅ Ошибок пока нет.")
+            return
+
+        with LOG_FILE.open("r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        # Последние 15 строк, максимум 1500 символов
+        logs = "".join(lines[-15:])[-1500:]
+
+        safe_logs = html.escape(logs)
+
+        bot.reply_to(
+            message,
+            "📋 <b>Последние ошибки:</b>\n\n"
+            f'<pre><code class="language-python">{safe_logs}</code></pre>',
+            parse_mode="HTML"
+        )
+
+    except Exception:
+        error_logger.exception("Ошибка чтения логов")
+        bot.reply_to(message, "❌ Не удалось прочитать логи.")
 
 def _ensure_maintenance_row():
     conn.execute("CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT)")
@@ -60,8 +105,8 @@ class MaintenanceMiddleware(BaseMiddleware):
             return None
  
         user = getattr(message, "from_user", None)
-        # Свои (developer / tester / admin / owner по openbot_id) проходят как обычно
-        if user is not None and openbot_id.check_access(user.id, MAINTENANCE_ALLOWED):
+        # Свои (developer / tester / admin / owner по openbot) проходят как обычно
+        if user is not None and openbot.check_access(user.id, MAINTENANCE_ALLOWED, level=1):
             return None
  
         # Остальным — сообщение «тех. работы», обработчики НЕ вызываются
@@ -340,9 +385,9 @@ def toggle_user_setting(user_id, setting_name):
         return new_val
     
 def get_openbot_user(user_id):
-    """Глобальные данные игрока из openbot_id (локально, без HTTP): {'status', 'level'} или None."""
+    """Глобальные данные игрока из openbot (локально, без HTTP): {'status', 'level'} или None."""
     try:
-        data = openbot_id.get_id(user_id)
+        data = openbot.get_id(user_id)
         if not data:
             return None
         return {
@@ -356,10 +401,10 @@ def get_openbot_user(user_id):
 
 def sync_global_status(user_id):
     """
-    Синхронизация GLOBAL -> LOCAL через openbot_id.
+    Синхронизация GLOBAL -> LOCAL через openbot.
 
     ВАЖНО:
-    - статус и role_level берём из openbot_id (get_openbot_user);
+    - статус и role_level берём из openbot (get_openbot_user);
     - users.level (игровой уровень) не изменяется;
     - локальный status/role_level обновляются сразу при обращении пользователя.
     """
@@ -461,8 +506,8 @@ def count_matched_digits(secret, guess):
     return sum(1 for s, g in zip(secret, guess) if s == g)
 
 def has_access(user_id):
-    """Доступ для команды (developer / tester / admin / owner) — через openbot_id."""
-    return openbot_id.check_access(user_id, ("developer", "tester", "admin", "owner"))
+    """Доступ для команды (developer / tester / admin / owner) — через openbot."""
+    return openbot.check_access(user_id, ("developer", "tester", "admin", "owner"))
 
 def check_ban(user_id):
     cursor = conn.cursor()
@@ -1824,7 +1869,7 @@ def start_bot(message):
     username = message.from_user.username
     reason = check_ban(user_id)
 
-    if openbot_id.is_globally_banned(user_id):
+    if openbot.is_globally_banned(user_id):
         bot.reply_to(
             message,
             "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети."
@@ -1835,8 +1880,8 @@ def start_bot(message):
         bot.reply_to(message, f"🚫 Вы заблокированы!\nПричина: {reason}")
         return
 
-    openbot_id.create_id(user_id, first_name)
-    openbot_id.register_bot_activity(user_id, "Random_bot")
+    openbot.create_id(user_id, first_name)
+    openbot.register_bot_activity(user_id, "Random_bot")
     create_user(user_id, username, first_name)
 
     # Проверяем, какой тип клавиатуры выбрал пользователь
@@ -1869,7 +1914,7 @@ def start_bot(message):
 def bot_help(message):
     uid = message.from_user.id
     reason = check_ban(uid)
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -1923,11 +1968,11 @@ def ban_user(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -1968,11 +2013,11 @@ def unban_by_username(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2010,11 +2055,11 @@ def send_all(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 2):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 2):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 2 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2059,7 +2104,7 @@ def send_all(message):
 def sell_item(message):
     uid = message.from_user.id
     reason = check_ban(uid)
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2135,11 +2180,11 @@ def gift_item(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2180,11 +2225,11 @@ def give_coins_cmd(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2224,11 +2269,11 @@ def take_coins_cmd(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2271,11 +2316,11 @@ def id_ban(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2295,14 +2340,14 @@ def id_ban(message):
     if not res:
         bot.reply_to(message, f"❌ Пользователь @{username} не найден.")
         return
-    data = openbot_id.get_id(res[0])
+    data = openbot.get_id(res[0])
     if not data:
         bot.reply_to(message, f"❌ У @{username} нет OpenbotAI ID.")
         return
     if data[3] == "banned":
         bot.reply_to(message, f"⚠️ @{username} уже забанен в ID!")
         return
-    openbot_id.set_status(res[0], "banned")
+    openbot.set_status(res[0], "banned")
     bot.reply_to(message, f"☠️ ID пользователя @{username} забанен!")
     try:
         bot.send_message(res[0], "☠️ Ваш OpenbotAI ID был забанен!")
@@ -2314,11 +2359,11 @@ def id_unban(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2338,7 +2383,7 @@ def id_unban(message):
     if not res:
         bot.reply_to(message, f"❌ Пользователь @{username} не найден.")
         return
-    data = openbot_id.get_id(res[0])
+    data = openbot.get_id(res[0])
     if not data:
         bot.reply_to(message, f"❌ У @{username} нет OpenbotAI ID.")
         return
@@ -2347,7 +2392,7 @@ def id_unban(message):
         bot.reply_to(message, f"⚠️ @{username} не забанен в ID!")
         return
     
-    openbot_id.set_status(res[0], "user")
+    openbot.set_status(res[0], "user")
     bot.reply_to(message, f"✅ ID пользователя @{username} разбанен!")
     try:
         bot.send_message(res[0], "✅ Ваш OpenbotAI ID был разбанен!")
@@ -2359,11 +2404,11 @@ def id_freeze(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2383,7 +2428,7 @@ def id_freeze(message):
     if not res:
         bot.reply_to(message, f"❌ Пользователь @{username} не найден.")
         return
-    data = openbot_id.get_id(res[0])
+    data = openbot.get_id(res[0])
     if not data:
         bot.reply_to(message, f"❌ У @{username} нет OpenbotAI ID.")
         return
@@ -2393,7 +2438,7 @@ def id_freeze(message):
     if data[3] == "banned":
         bot.reply_to(message, f"⚠️ @{username} забанен, сначала разбань!")
         return
-    openbot_id.set_status(res[0], "frozen")
+    openbot.set_status(res[0], "frozen")
     bot.reply_to(message, f"❄️ ID пользователя @{username} заморожен!")
     try:
         bot.send_message(res[0], "❄️ Ваш OpenbotAI ID был заморожен!")
@@ -2405,11 +2450,11 @@ def id_unfreeze(message):
     uid = message.from_user.id
     reason = check_ban(uid)
 
-    if not openbot_id.check_access(uid, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(uid, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
 
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2429,16 +2474,16 @@ def id_unfreeze(message):
         return
     target_id = res[0]
 
-    if not openbot_id.get_id(target_id):
+    if not openbot.get_id(target_id):
         bot.reply_to(message, f"❌ У @{username} нет OpenbotAI ID.")
         return
 
     # было: data[3] != "frozen"  (data[3] — эмодзи, а не статус)
-    if openbot_id.get_status(target_id) != "frozen":
+    if openbot.get_status(target_id) != "frozen":
         bot.reply_to(message, f"⚠️ @{username} не заморожен!")
         return
 
-    openbot_id.set_status(target_id, "user")
+    openbot.set_status(target_id, "user")
     bot.reply_to(message, f"✅ ID пользователя @{username} разморожен!")
     try:
         bot.send_message(target_id, "✅ Ваш OpenbotAI ID был разморожен!")
@@ -2450,11 +2495,11 @@ def cmd_level_up(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2502,7 +2547,7 @@ def cmd_level_up(message):
 def feedback_command(message):
     uid = message.from_user.id
     reason = check_ban(uid)
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2550,7 +2595,7 @@ def feedback_command(message):
 def set_bio_command(message):
     uid = message.from_user.id
     reason = check_ban(uid)
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2567,16 +2612,16 @@ def set_bio_command(message):
         bot.reply_to(message, "❌ Слишком длинное био, максимум 200 символов")
         return
     
-    openbot_id.update_bio(uid, new_bio)
+    openbot.update_bio(uid, new_bio)
     bot.reply_to(message, f"✅ Био обновлено:\n`{new_bio}`", parse_mode='Markdown')
 
 @bot.message_handler(commands=['id_profile'])
 def id_profile(message):
     uid, cid = message.from_user.id, message.chat.id
-    global_data = openbot_id.get_id(uid)
+    global_data = openbot.get_id(uid)
     reason = check_ban(uid)
 
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2589,9 +2634,9 @@ def id_profile(message):
         g_bio = global_data[8] or "Не установлена"
         g_data = global_data[7]
         
-        bots_list = openbot_id.get_active_bots(uid)
+        bots_list = openbot.get_active_bots(uid)
         g_active_bot = ", ".join(bots_list) if bots_list else "Ни в каких"
-        g_status = openbot_id.ROLE.get(global_data[6], "👤 Игрок")
+        g_status = ROLE.get(global_data[6], "👤 Игрок")
             
         text = f"""**🌐 Общий профиль Openbot AI ID**
 
@@ -2613,7 +2658,7 @@ def id_profile(message):
 
 def get_profile_text(user_id):
     user = get_user(user_id)
-    global_data = openbot_id.get_id(user_id)
+    global_data = openbot.get_id(user_id)
 
     if global_data:
         g_name = global_data[2]
@@ -2661,7 +2706,7 @@ def profile_command(message):
     
     reason = check_ban(uid)
 
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2689,11 +2734,11 @@ def mode_false(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
 
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -2709,11 +2754,11 @@ def mode_tre(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     
-    if not openbot_id.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
+    if not openbot.check_access(message.from_user.id, ("developer", "tester", "admin", "owner"), 1):
         bot.reply_to(message, "⛔ Нужен статус developer/tester/admin от 1 ур.")
         return
  
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.reply_to(message, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.")
         return
     if reason:
@@ -3042,7 +3087,7 @@ def handle_rnd_callback(call):
     
     reason = check_ban(uid)
 
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.answer_callback_query(call.id, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.", show_alert=True)
         return
     if reason:
@@ -3129,7 +3174,7 @@ def handle_callback(call):
     mid = call.message.message_id
     reason = check_ban(uid)
     
-    if openbot_id.is_globally_banned(uid):
+    if openbot.is_globally_banned(uid):
         bot.answer_callback_query(call.id, "☠ Доступ закрыт!\nВаш глобальный аккаунт заблокирован во всех ботах нашей сети.", show_alert=True)
         return
     if reason:
@@ -3211,7 +3256,7 @@ def handle_callback(call):
         
     elif call.data == 'profile':
         user = get_user(user_id)
-        global_data = openbot_id.get_id(user_id)
+        global_data = openbot.get_id(user_id)
         equipped = get_equipped_emoji(user_id)
 
         if global_data:
@@ -3677,18 +3722,18 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, msg_text)
         
     elif call.data == "settings_id":
-        global_data = openbot_id.get_id(uid)
+        global_data = openbot.get_id(uid)
         
         if global_data:
             g_name = global_data[2]
             g_tag = global_data[5] or "Не установлен"
             g_bio = global_data[8] or "Не установлена"
             g_data = global_data[7]
-            g_active_bot = openbot_id.get_active_bots(uid)
+            g_active_bot = openbot.get_active_bots(uid)
 
-            num_status = openbot_id.get_user_level(user_id)
-            raw_status = openbot_id.get_status(user_id)
-            g_status = openbot_id.ROLE.get(raw_status, f"{raw_status}")
+            num_status = openbot.get_user_level(user_id)
+            raw_status = openbot.get_status(user_id)
+            g_status = ROLE.get(raw_status, f"{raw_status}")
 
             if raw_status in ["developer", "owner", "admin", "tester"]:
                 full_status_display = f"{g_status} [{num_status}]"
@@ -3996,7 +4041,7 @@ def handle_all_reply_menus(message):
     
     if text == "⚙ Настройки ID":
         try:
-            global_data = openbot_id.get_id(uid)
+            global_data = openbot.get_id(uid)
         except Exception as e:
             print(f"[REPLY SETTINGS ID] {e}")
             global_data = None
@@ -4007,8 +4052,8 @@ def handle_all_reply_menus(message):
             g_bio = global_data[8] or "Не установлена"
 
             try:
-                raw_status = openbot_id.get_status(uid)
-                g_status = openbot_id.ROLE.get(
+                raw_status = openbot.get_status(uid)
+                g_status = ROLE.get(
                     raw_status,
                     str(raw_status)
                 )
@@ -4016,12 +4061,12 @@ def handle_all_reply_menus(message):
                 g_status = "👤 Игрок"
     
             try:
-                g_level = openbot_id.get_user_level(uid)
+                g_level = openbot.get_user_level(uid)
             except Exception:
                 g_level = 1
 
             try:
-                g_active_bot = openbot_id.get_active_bots(uid)
+                g_active_bot = openbot.get_active_bots(uid)
             except Exception:
                 g_active_bot = "Неизвестно"
 
@@ -4555,6 +4600,26 @@ def handle_messages(message):
 # Глобальный обработчик ошибок
 # ==============================
 
+# Общая папка logs находится над папками Random_bot и Master_bot.
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "random_bot.log"
+error_logger = logging.getLogger("random_bot.errors")
+error_logger.setLevel(logging.ERROR)
+error_logger.propagate = False
+if not error_logger.handlers:
+    file_handler = RotatingFileHandler(
+        LOG_FILE, maxBytes=5 * 1024 * 1024,
+        backupCount=3, encoding="utf-8"
+    )
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    error_logger.addHandler(file_handler)
+    # Сетевые ошибки polling могут логироваться самой библиотекой telebot.
+    for library_logger_name in ("TeleBot", "telebot"):
+        library_logger = logging.getLogger(library_logger_name)
+        library_logger.addHandler(file_handler)
+        library_logger.setLevel(logging.WARNING)
+
 class GlobalExceptionHandler(telebot.ExceptionHandler):
 
     def handle(self, exception):
@@ -4564,7 +4629,12 @@ class GlobalExceptionHandler(telebot.ExceptionHandler):
         print("=" * 60)
 
         # Получаем полный traceback
-        error_log = traceback.format_exc()
+        error_log = "".join(traceback.format_exception(
+            type(exception), exception, exception.__traceback__
+        ))
+
+        # Записываем любой traceback, независимо от настроек Telegram.
+        error_logger.error("\n%s", error_log.rstrip())
 
         print(error_log)
 
@@ -4578,6 +4648,16 @@ class GlobalExceptionHandler(telebot.ExceptionHandler):
         # ==============================
 
         for developer_id in developers:
+
+            # Настройка уведомлений берётся из основной базы пользователей.
+            # Если прочитать её не удалось, не отправляем сообщение,
+            # а оставляем информацию в локальном логе.
+            try:
+                if get_user_settings(developer_id)[1] != 1:
+                    continue
+            except Exception:
+                error_logger.exception("Не удалось проверить уведомления для %s", developer_id)
+                continue
 
             try:
 
@@ -4624,6 +4704,7 @@ class GlobalExceptionHandler(telebot.ExceptionHandler):
 
             except Exception as send_error:
 
+                error_logger.exception("Не удалось отправить ошибку разработчику %s", developer_id)
                 print(
                     f"[ERROR] Не удалось отправить ошибку "
                     f"разработчику {developer_id}: {send_error}"
@@ -4639,6 +4720,7 @@ class GlobalExceptionHandler(telebot.ExceptionHandler):
 
 bot.exception_handler = GlobalExceptionHandler()
 
+
 print("[ Успешно ] Бот запущен и готов к работе!")
 
-bot.polling(none_stop=True, timeout=70)
+bot.polling(non_stop=True, timeout=70)

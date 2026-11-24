@@ -8,6 +8,7 @@ import re
 import shutil
 import sqlite3
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from random import SystemRandom
 
@@ -19,6 +20,9 @@ NEWYEAR_END = date(2027, 1, 10)
 BIRTHDAY = date(2026, 12, 27)
 TITLES = {'winter26': '❄️ Зимний герой', 'birthday26': '🎂 С нами 1 год'}
 _rng = SystemRandom()
+
+def _today_msk():
+    return datetime.now(ZoneInfo('Europe/Moscow')).date()
 
 
 class HolidayEvents:
@@ -133,22 +137,27 @@ class HolidayEvents:
             self.bot.reply_to(message, '⚠️ Не удалось получить подарок. Проверь логи бота.')
             raise
 
-    # 13 independent daily rewards. No automatic menu switching.
-    CALENDAR_REWARDS = (
-        ('2026-12-20', '🪙', 500),
-        ('2026-12-21', '❄️', 5),
-        ('2026-12-22', '🪙', 750),
-        ('2026-12-23', '❄️', 10),
-        ('2026-12-24', '🪙', 1000),
-        ('2026-12-25', '🎁', 1),
-        ('2026-12-26', '❄️', 15),
-        ('2026-12-27', '🪙', 2026),
-        ('2026-12-28', '🪙', 2000),
-        ('2026-12-29', '❄️', 20),
-        ('2026-12-30', '🎁', 1),
-        ('2026-12-31', '🪙', 5000),
-        ('2027-01-01', '🎆', 100000),
+    # Ноябрьский адвент (с 1 по 30 ноября 2026 года).
+    # Награды за каждый день фиксированы, повторно не выдаются.
+    # Это НЕ меняет отдельно существующее декабрьское событие.
+    CALENDAR_REWARDS = tuple(
+        (
+            f'2026-11-{day:02d}',
+            '🎁' if day in (10, 20, 30) else ('❄️' if day % 3 == 0 else '🪙'),
+            1 if day in (10, 20, 30) else (
+                3 + day // 3 if day % 3 == 0 else 100 + 40 * day
+            ),
+        )
+        for day in range(1, 31)
     )
+
+    @staticmethod
+    def _calendar_reward_label(icon, amount):
+        if icon == '🪙':
+            return f'{amount:,} монет'.replace(',', ' ')
+        if icon == '❄️':
+            return f'{amount} снежинок'
+        return 'золотой кейс'
 
     def _calendar_info(self, user_id):
         with self._db() as db:
@@ -157,88 +166,150 @@ class HolidayEvents:
                 (user_id,)).fetchall()}
         return claimed
 
-    def show_calendar(self, message):
-        uid = message.from_user.id
+    def _calendar_view(self, uid):
+        """Настоящая сетка Telegram Inline-кнопок на 30 дней ноября."""
         claimed = self._calendar_info(uid)
-        now = date.today().isoformat()
-        lines = ['🎄 <b>НОВОГОДНИЙ КАЛЕНДАРЬ</b>',
-                 '20 декабря 2026 — 1 января 2027', '',
-                 '🎁 Один подарок в день. Пропущенные дни не открываются.', '']
+        today = _today_msk().isoformat()
+        lines = [
+            '🎁 <b>АДВЕНТ-КАЛЕНДАРЬ • НОЯБРЬ 2026</b>',
+            '',
+            'Нажми на число, чтобы посмотреть награду или забрать подарок.',
+            '🎁 — сегодня · ✅ — получено · 🔒 — впереди · ⌛ — пропущено',
+            '',
+            '📅 Все 30 дней ноября. Пропущенные подарки не выдаются.',
+            '🎁 10, 20 и 30 ноября — особые награды.',
+        ]
+        keyboard = types.InlineKeyboardMarkup(row_width=5)
+        buttons = []
         for day, icon, amount in self.CALENDAR_REWARDS:
-            label = date.fromisoformat(day).strftime('%d.%m')
-            mark = '✅' if day in claimed else ('🎁' if day == now else '🔒')
-            reward = f'{amount:,} монет'.replace(',', ' ') if icon in ('🪙', '🎆') else (
-                f'{amount} снежинок' if icon == '❄️' else '1 праздничный кейс')
-            lines.append(f'{mark} <b>{label}</b> — {icon} {reward}')
-        lines += ['', '🎆 1 января — главный приз: 100 000 монет!',
-                  'Нажми кнопку ниже, чтобы забрать сегодняшний подарок.']
-        kb = types.InlineKeyboardMarkup()
-        kb.add(types.InlineKeyboardButton('🎁 Забрать подарок дня', callback_data='calendar_claim'))
-        self.bot.send_message(message.chat.id, '\n'.join(lines),
-                              reply_markup=kb, parse_mode='HTML')
+            if day in claimed:
+                status = '✅'
+            elif day == today:
+                status = '🎁'
+            elif day < today:
+                status = '⌛'
+            else:
+                status = '🔒'
+            short = day[-2:]
+            buttons.append(types.InlineKeyboardButton(
+                f'{status} {short}', callback_data=f'calendar_day:{day}'
+            ))
+        for pos in range(0, len(buttons), 5):
+            keyboard.row(*buttons[pos:pos + 5])
+        keyboard.add(types.InlineKeyboardButton(
+            '🔄 Обновить', callback_data='calendar_refresh'
+        ))
+        keyboard.add(types.InlineKeyboardButton(
+            '🏠 Главное меню', callback_data='calendar_home'
+        ))
+        return '\n'.join(lines), keyboard
 
-    def claim_calendar(self, message):
-        today = date.today().isoformat()
+    def show_calendar(self, message):
+        """Открывает календарь в любом режиме кнопок, включая Reply."""
+        text, keyboard = self._calendar_view(message.from_user.id)
+        return self.bot.send_message(
+            message.chat.id, text, reply_markup=keyboard, parse_mode='HTML'
+        )
+
+    def claim_calendar(self, message, selected_day=None):
+        today = _today_msk().isoformat()
         items = {d: (icon, amount) for d, icon, amount in self.CALENDAR_REWARDS}
-        if today not in items:
-            return '🔒 Календарь работает с 20.12.2026 по 01.01.2027.'
+        day = selected_day or today
+        if day not in items:
+            return '❌ Этот день не входит в календарь ноября 2026.'
+        icon, amount = items[day]
+        reward_label = self._calendar_reward_label(icon, amount)
+        day_label = date.fromisoformat(day).strftime('%d.%m')
+        if day > today:
+            return f'🔒 {day_label} ещё не наступило. Награда: {reward_label}.'
+        if day < today:
+            if day in self._calendar_info(message.from_user.id):
+                return f'✅ За {day_label} подарок уже получен.'
+            return f'⌛ {day_label} уже прошло. Пропущенный подарок недоступен.'
         uid = message.from_user.id
         if not self._allowed(uid):
-            return '⛔ Нет доступа или API недоступен.'
+            return '⛔ Пока действует блокировка, награды недоступны.'
         self._ensure_user(message)
-        icon, amount = items[today]
         try:
             with self._db() as db:
                 db.execute('BEGIN IMMEDIATE')
-                db.execute('INSERT INTO holiday.calendar_claims(user_id,reward_day,claimed_at) '
-                           'VALUES(?,?,?)', (uid, today, datetime.now().isoformat()))
-                if icon in ('🪙', '🎆'):
-                    result = db.execute('UPDATE users SET coins=COALESCE(coins,0)+? WHERE user_id=?',
-                                        (amount, uid))
+                db.execute(
+                    'INSERT INTO holiday.calendar_claims(user_id,reward_day,claimed_at) '
+                    'VALUES(?,?,?)', (uid, day, datetime.now().isoformat())
+                )
+                if icon == '🪙':
+                    result = db.execute(
+                        'UPDATE users SET coins=COALESCE(coins,0)+? WHERE user_id=?',
+                        (amount, uid)
+                    )
                     if result.rowcount != 1:
                         raise ValueError('Профиль не найден, используй /start')
-                    text = f'{amount:,} монет'.replace(',', ' ')
                 elif icon == '❄️':
                     db.execute('CREATE TABLE IF NOT EXISTS holiday.winter_players '
                                '(user_id INTEGER PRIMARY KEY, snowflakes INTEGER NOT NULL DEFAULT 0)')
                     db.execute('INSERT INTO holiday.winter_players(user_id,snowflakes) VALUES(?,?) '
                                'ON CONFLICT(user_id) DO UPDATE SET snowflakes=snowflakes+excluded.snowflakes',
                                (uid, amount))
-                    text = f'{amount} снежинок'
-                else:
+                elif icon == '🎁':
                     db.execute('CREATE TABLE IF NOT EXISTS holiday.winter_cases '
                                '(user_id INTEGER NOT NULL, case_key TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, '
                                'PRIMARY KEY(user_id,case_key))')
                     db.execute('INSERT INTO holiday.winter_cases(user_id,case_key,count) VALUES(?,?,1) '
                                'ON CONFLICT(user_id,case_key) DO UPDATE SET count=count+1',
                                (uid, 'gold'))
-                    text = 'золотой кейс'
-            return f'🎁 Подарок получен! {icon} {text}'
+            return f'🎉 {day_label}: подарок получен! {icon} {reward_label}'
         except sqlite3.IntegrityError:
-            return '✅ Подарок за сегодня уже получен.'
+            return f'✅ За {day_label} подарок уже получен.'
         except Exception:
             import logging
-            logging.exception('Ошибка выдачи календарной награды')
+            logging.exception('Ошибка ноябрьского адвент-календаря')
             return '⚠️ Не удалось выдать подарок. Проверь логи.'
+
+    def on_calendar_callback(self, call):
+        """Единая обработка нажатий; регистрируется в основном файле бота."""
+        class Msg:
+            chat = call.message.chat
+            from_user = call.from_user
+            message_id = call.message.message_id
+
+        data = call.data or ''
+        if data == 'calendar_open':
+            self.bot.answer_callback_query(call.id)
+            self.show_calendar(Msg())
+            return
+        if data == 'calendar_home':
+            # Кнопку «Главное меню» обрабатывает основной файл бота.
+            self.bot.answer_callback_query(call.id)
+            return
+        if data == 'calendar_refresh':
+            self.bot.answer_callback_query(call.id, '🔄 Обновлено')
+        else:
+            selected_day = data.partition(':')[2] if data.startswith('calendar_day:') else None
+            notice = self.claim_calendar(Msg(), selected_day=selected_day)
+            # Не более 200 символов в answerCallbackQuery.
+            self.bot.answer_callback_query(call.id, notice[:190], show_alert=True)
+        text, keyboard = self._calendar_view(call.from_user.id)
+        try:
+            self.bot.edit_message_text(
+                text, call.message.chat.id, call.message.message_id,
+                reply_markup=keyboard, parse_mode='HTML'
+            )
+        except Exception as exc:
+            if 'message is not modified' not in str(exc).lower():
+                self.bot.send_message(
+                    call.message.chat.id, text,
+                    reply_markup=keyboard, parse_mode='HTML'
+                )
 
     def _handlers(self):
         bot = self.bot
 
-        @bot.message_handler(commands=['calendar'])
-        def calendar_command(message):
-            self.show_calendar(message)
-
-        @bot.callback_query_handler(func=lambda c: c.data == 'calendar_claim')
-        def calendar_callback(call):
-            class Msg:
-                chat = call.message.chat
-                from_user = call.from_user
-                message_id = call.message.message_id
-            bot.answer_callback_query(call.id, self.claim_calendar(Msg()), show_alert=True)
+        # /calendar, календарная Reply-кнопка и Inline callbacks
+        # регистрируются в random_bot.py ДО остальных общих обработчиков.
 
         @bot.message_handler(commands=['newyear', 'holiday'])
         def holiday(message):
-            today = date.today()
+            today = _today_msk()
             status = '🟢 Идёт!' if NEWYEAR_START <= today <= NEWYEAR_END else '🔒 Пока закрыто'
             kb = types.InlineKeyboardMarkup()
             kb.add(types.InlineKeyboardButton('🎁 Ежедневный подарок', callback_data='holiday_daily'))
@@ -265,14 +336,14 @@ class HolidayEvents:
 
         @bot.message_handler(commands=['daily_gift'])
         def daily(message):
-            if not NEWYEAR_START <= date.today() <= NEWYEAR_END:
+            if not NEWYEAR_START <= _today_msk() <= NEWYEAR_END:
                 return bot.reply_to(message, '🔒 Подарки доступны с 20.12.2026 по 10.01.2027.')
             amount = 250  # fixed daily reward; retrying cannot reroll
-            self._claim_gift(message, 'daily:' + date.today().isoformat(), amount)
+            self._claim_gift(message, 'daily:' + _today_msk().isoformat(), amount)
 
         @bot.message_handler(commands=['birthday_gift'])
         def birthday(message):
-            if date.today() != BIRTHDAY:
+            if _today_msk() != BIRTHDAY:
                 return bot.reply_to(message, '🎂 Подарок доступен только 27 декабря 2026 года.')
             self._claim_gift(message, 'birthday:2026', 2026)
 
@@ -293,7 +364,7 @@ class HolidayEvents:
                     p = db.execute('SELECT * FROM holiday.promos WHERE code=?', (code,)).fetchone()
                     if not p or not p['active']:
                         return bot.reply_to(message, '❌ Промокод не существует или отключён.')
-                    if date.fromisoformat(p['expires']) < date.today():
+                    if date.fromisoformat(p['expires']) < _today_msk():
                         return bot.reply_to(message, '⌛ Промокод истёк.')
                     if p['used'] >= p['max_uses']:
                         return bot.reply_to(message, '❌ Активации закончились.')
@@ -324,7 +395,7 @@ class HolidayEvents:
             try:
                 limit = int(count)
                 end = date.fromisoformat(expiry)
-                if not 1 <= limit <= 100000 or end < date.today():
+                if not 1 <= limit <= 100000 or end < _today_msk():
                     raise ValueError()
                 if prize.startswith('title:'):
                     kind, value = 'title', prize.removeprefix('title:')
@@ -450,3 +521,24 @@ def get_titles(user_id):
     with _winter_lock, _winter_connection() as db:
         rows=db.execute('SELECT title_key FROM winter_owned_titles WHERE user_id=? ORDER BY rowid',(user_id,)).fetchall()
         return [r[0] for r in rows]
+
+
+# Winter shop: atomic snowflake-title purchases; compatible with existing tables.
+def buy_snow_title(user_id, title_key, price):
+    if not isinstance(price, int) or price <= 0 or not isinstance(title_key, str):
+        raise ValueError('Некорректный товар')
+    with _winter_lock, _winter_connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('CREATE TABLE IF NOT EXISTS winter_players (user_id INTEGER PRIMARY KEY, snowflakes INTEGER NOT NULL DEFAULT 0)')
+        db.execute('CREATE TABLE IF NOT EXISTS winter_owned_titles (user_id INTEGER NOT NULL, title_key TEXT NOT NULL, price INTEGER DEFAULT 0, PRIMARY KEY(user_id,title_key))')
+        owned = db.execute('SELECT 1 FROM winter_owned_titles WHERE user_id=? AND title_key=?', (user_id, title_key)).fetchone()
+        historical = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='titles'").fetchone()
+        if historical:
+            owned = owned or db.execute('SELECT 1 FROM titles WHERE user_id=? AND title_key=?', (user_id, title_key)).fetchone()
+        if owned:
+            return 'owned'
+        spent = db.execute('UPDATE winter_players SET snowflakes=snowflakes-? WHERE user_id=? AND snowflakes>=?', (price,user_id,price))
+        if spent.rowcount != 1:
+            return 'poor'
+        db.execute('INSERT INTO winter_owned_titles (user_id,title_key,price) VALUES (?,?,?)', (user_id,title_key,price))
+    return 'ok'

@@ -31,11 +31,11 @@ DEVELOPER_CHAT_ID = 6265920670
 # test
 KB_TYPE = False # Замените на свой ID
 # ========================
-TOKEN = "token"
+TOKEN = "8493714047:AAGAVFDc_nvDR2S6LLpgDBhx85dikxJVMMY"
 bot = telebot.TeleBot(TOKEN, use_class_middlewares=True)
 
-OPENBOT_KEY = "token"
-openbot = openbot_api.OpenbotAPI(api_key="token", bot=bot)
+OPENBOT_KEY = "openbot_staff_live_x7TDlXzrayMYFUhltO8VQJVLTuW_t8894leIPW087XA"
+openbot = openbot_api.OpenbotAPI(api_key="openbot_staff_live_x7TDlXzrayMYFUhltO8VQJVLTuW_t8894leIPW087XA", bot=bot)
 
 @bot.message_handler(commands=['test_error'])
 def test_error(message):
@@ -1486,9 +1486,7 @@ def main_mune():
     
     markup.add(types.InlineKeyboardButton("🏆 Мои титулы", callback_data="winter_titles"),
                types.InlineKeyboardButton("📊 Лидеры", callback_data="winter_leaders"))
-    is_december = datetime.now(ZoneInfo('Europe/Moscow')).date() >= datetime(2026,12,1).date()
-    markup.add(types.InlineKeyboardButton("📅 Календарь декабря" if is_december else "📅 Календарь ноября",
-                   callback_data="dec_cal_open" if is_december else "nov_cal_open"))
+    markup.add(types.InlineKeyboardButton("📅 Календарь декабря", callback_data="dec_cal_open"))
     return markup
 
 def main_mune_reply():
@@ -1498,7 +1496,7 @@ def main_mune_reply():
     markup.row(types.KeyboardButton("🎁 Зимняя лавка"), types.KeyboardButton("🎒 Инвентарь"))
     markup.row(types.KeyboardButton("🏪 Рынок"), types.KeyboardButton("⚙️ Настройки"))
     markup.row(types.KeyboardButton("🏆 Мои титулы"), types.KeyboardButton("📊 Лидеры"))
-    markup.add(types.KeyboardButton("📅 Календарь декабря" if datetime.now(ZoneInfo('Europe/Moscow')).date() >= datetime(2026,12,1).date() else "📅 Календарь ноября"))
+    markup.add(types.KeyboardButton("📅 Календарь декабря"))
     return markup
 
 
@@ -1799,7 +1797,6 @@ def regular_shop_menu():
 
 # Ограниченная коллекция: день рождения и кастомные титулы добавим отдельным патчем.
 SNOW_TITLES = {
-    'winter_2026': ('🎄 Новый год 2026', 40),
     'winter_2027': ('🎆 Новый год 2027', 90),
     'snow_collector': ('❄️ Снежный коллекционер', 150),
 }
@@ -2175,218 +2172,12 @@ def show_inventory_ui(chat_id, message_id, user_id, page=1):
     try: bot.edit_message_text(text,chat_id=chat_id,message_id=message_id,reply_markup=markup,parse_mode="HTML")
     except Exception: pass
 
-# ============ 📅 АДВЕНТ-КАЛЕНДАРЬ НА НОЯБРЬ 2026 ============
-# Все 30 дат видны. Просроченные подарки доступны; будущие закрыты.
-# БД наград: Newyear_random.db, таблица calendar_claims.
-# Данный раздел работает прямо в основном файле бота.
-
-NOVEMBER_YEAR = 2026
-NOVEMBER_MONTH = 11
-NOVEMBER_DB = Path(__file__).resolve().parent / WINTER_DB_NAME
-
-
-def november_today():
-    """Локальная дата сервера; правила проверяются повторно при нажатии."""
-    return datetime.now(ZoneInfo('Europe/Moscow')).date()
-
-
-def november_claimed_days(user_id):
-    with sqlite3.connect(NOVEMBER_DB, timeout=15) as db:
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS calendar_claims ("
-            "user_id INTEGER NOT NULL, reward_day TEXT NOT NULL, "
-            "claimed_at TEXT NOT NULL, PRIMARY KEY (user_id, reward_day))"
-        )
-        rows = db.execute(
-            "SELECT reward_day FROM calendar_claims WHERE user_id=? "
-            "AND reward_day LIKE '2026-11-%'", (user_id,)
-        ).fetchall()
-    return {row[0] for row in rows}
-
-
-def november_reward(day):
-    """Награды за ноябрь: монеты, снежинки, особые дни с кейсами."""
-    if day in (10, 20, 30):
-        return 'case', 1, '🎁 Золотой кейс'
-    if day % 3 == 0:
-        amount = 3 + day // 3
-        return 'snowflakes', amount, f'❄️ {amount} снежинок'
-    amount = 100 + 40 * day
-    return 'coins', amount, f'💰 {amount} монет'
-
-
-def november_calendar_view(user_id):
-    """30 кнопок; доступные пропущенные дни можно получить позже."""
-    today = november_today()
-    claimed = november_claimed_days(user_id)
-    first_day = datetime(NOVEMBER_YEAR, NOVEMBER_MONTH, 1).date()
-    unlocked_through = min(today.day, 30) if today.year == NOVEMBER_YEAR and today.month == NOVEMBER_MONTH else (30 if today > first_day else 0)
-
-    keyboard = types.InlineKeyboardMarkup(row_width=5)
-    available = 0
-    for start in range(1, 31, 5):
-        row = []
-        for day in range(start, start + 5):
-            key = f'{NOVEMBER_YEAR}-11-{day:02d}'
-            if key in claimed:
-                icon = '✅'
-            elif day <= unlocked_through:
-                icon = '🎁'
-                available += 1
-            else:
-                icon = '🔒'
-            row.append(types.InlineKeyboardButton(
-                f'{icon} {day:02d}', callback_data=f'nov_cal_day:{day:02d}'
-            ))
-        keyboard.row(*row)
-
-    if available:
-        keyboard.row(types.InlineKeyboardButton(
-            f'🎁 Забрать всё доступное ({available})',
-            callback_data='nov_cal_claim_all',
-        ))
-    keyboard.row(
-        types.InlineKeyboardButton('🔄 Обновить', callback_data='nov_cal_refresh'),
-        types.InlineKeyboardButton('🏠 Главное меню', callback_data='nov_cal_back'),
-    )
-
-    if today < first_day:
-        status = '🔒 Календарь откроется 1 ноября 2026 года.'
-    elif available:
-        status = f'🎁 Можно забрать подарков: {available}.'
-    else:
-        status = '✅ Все открывшиеся подарки уже получены!'
-
-    text = (
-        '📅 <b>АДВЕНТ-КАЛЕНДАРЬ • НОЯБРЬ 2026</b>\n'
-        '━━━━━━━━━━━━━━━━━━\n\n'
-        '30 дней — 30 подарков!\n'
-        'Подарки за прошедшие дни <b>не сгорают</b>.\n'
-        'Открывай их по одному или одной кнопкой.\n\n'
-        f'{status}\n\n'
-        '🎁 Доступно · ✅ Получено · 🔒 Пока закрыто\n'
-        'Особые дни: 10, 20 и 30 ноября.\n'
-        'Каждый подарок выдаётся только один раз.'
-    )
-    return text, keyboard
-
-def november_show_calendar(chat_id, user_id):
-    text, keyboard = november_calendar_view(user_id)
-    return bot.send_message(
-        chat_id, text, reply_markup=keyboard, parse_mode='HTML'
-    )
-
-
-def november_claim_many(user_id, days=None):
-    """Атомарная выдача накопленных наград. days=None — все открывшиеся."""
-    if _tech_disabled('calendar') or _tech_disabled('rewards'):
-        return 0, '🛠 Выдача календарных подарков на техработах.'
-
-    today = november_today()
-    first_day = datetime(NOVEMBER_YEAR, NOVEMBER_MONTH, 1).date()
-    if today < first_day:
-        return 0, '🔒 Календарь откроется 1 ноября 2026 года.'
-
-    last_day = today.day if today.year == NOVEMBER_YEAR and today.month == NOVEMBER_MONTH else 30
-    last_day = min(last_day, 30)
-    if days is None:
-        selected = list(range(1, last_day + 1))
-    else:
-        selected = sorted(set(days))
-        if not selected or any(not isinstance(d, int) or d < 1 or d > 30 for d in selected):
-            return 0, '❌ Неверный день календаря.'
-        if selected[-1] > last_day:
-            return 0, '🔒 Этот день ещё не наступил.'
-
-    # Проверяем блокировку до зачисления (в том числе при использовании старых кнопок).
-    try:
-        if _punishment_get(user_id) or openbot.get_global_ban(user_id).get('banned'):
-            return 0, '🚫 Во время блокировки награды недоступны.'
-    except Exception:
-        return 0, '⚠️ Openbot API недоступен. Награды не выданы.'
-
-    try:
-        with sqlite3.connect(DB_NAME, timeout=15) as db:
-            db.execute('PRAGMA busy_timeout=15000')
-            db.execute('ATTACH DATABASE ? AS holiday', (str(NOVEMBER_DB),))
-            db.execute('CREATE TABLE IF NOT EXISTS holiday.calendar_claims ('
-                       'user_id INTEGER NOT NULL, reward_day TEXT NOT NULL, '
-                       'claimed_at TEXT NOT NULL, PRIMARY KEY(user_id,reward_day))')
-            db.execute('CREATE TABLE IF NOT EXISTS holiday.winter_players ('
-                       'user_id INTEGER PRIMARY KEY, snowflakes INTEGER NOT NULL DEFAULT 0)')
-            db.execute('CREATE TABLE IF NOT EXISTS holiday.winter_cases ('
-                       'user_id INTEGER NOT NULL, case_key TEXT NOT NULL, '
-                       'count INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(user_id,case_key))')
-            db.execute('BEGIN IMMEDIATE')
-            if not db.execute('SELECT 1 FROM users WHERE user_id=?', (user_id,)).fetchone():
-                return 0, '❌ Сначала создай профиль: /start.'
-
-            count = 0
-            coins = 0
-            snowflakes = 0
-            cases = 0
-            for day in selected:
-                key = f'{NOVEMBER_YEAR}-11-{day:02d}'
-                inserted = db.execute(
-                    'INSERT OR IGNORE INTO holiday.calendar_claims '
-                    '(user_id,reward_day,claimed_at) VALUES (?,?,?)',
-                    (user_id, key, datetime.now().isoformat()),
-                )
-                if inserted.rowcount != 1:
-                    continue  # Уже забрано — никаких повторных наград.
-                kind, amount, _ = november_reward(day)
-                if kind == 'coins':
-                    result = db.execute(
-                        'UPDATE users SET coins=COALESCE(coins,0)+? WHERE user_id=?',
-                        (amount, user_id),
-                    )
-                    if result.rowcount != 1:
-                        raise RuntimeError('Не удалось выдать монеты')
-                    coins += amount
-                elif kind == 'snowflakes':
-                    db.execute(
-                        'INSERT INTO holiday.winter_players(user_id,snowflakes) '
-                        'VALUES(?,?) ON CONFLICT(user_id) '
-                        'DO UPDATE SET snowflakes=snowflakes+excluded.snowflakes',
-                        (user_id, amount),
-                    )
-                    snowflakes += amount
-                elif kind == 'case':
-                    db.execute(
-                        'INSERT INTO holiday.winter_cases(user_id,case_key,count) '
-                        'VALUES(?,?,?) ON CONFLICT(user_id,case_key) '
-                        'DO UPDATE SET count=count+excluded.count',
-                        (user_id, 'gold', amount),
-                    )
-                    cases += amount
-                else:
-                    raise RuntimeError('Неизвестный тип награды')
-                count += 1
-
-        if not count:
-            return 0, '✅ Все выбранные подарки уже получены.'
-        rewards = []
-        if coins:
-            rewards.append(f'💰 +{coins} монет')
-        if snowflakes:
-            rewards.append(f'❄️ +{snowflakes} снежинок')
-        if cases:
-            rewards.append(f'🎁 +{cases} золотых кейсов')
-        return count, f'🎉 Получено подарков: {count}!\n' + '\n'.join(rewards)
-    except Exception:
-        logging.getLogger('random_bot.advent').exception(
-            'Ошибка выдачи накопленных календарных подарков user_id=%s', user_id
-        )
-        return 0, '⚠️ Не удалось выдать награды. Проверь /logs.'
-
-
-def november_claim(user_id, day):
-    count, notice = november_claim_many(user_id, [day])
-    return bool(count), notice
+# Новогодняя SQLite хранит декабрьские награды и старые записи без удаления.
+EVENT_DB = Path(__file__).resolve().parent / WINTER_DB_NAME
 
 # ================================================================
 # 📅 ДЕКАБРЬ 2026: 31 подарок, можно забрать пропущенные дни.
-# Полностью независим от ноябрьского календаря.
+# Ноябрьские награды в базе сохраняются, но ноябрьского интерфейса больше нет.
 # ================================================================
 def december_today():
     return datetime.now(_LAUNCH_TZ).date()
@@ -2399,7 +2190,7 @@ def december_reward(day):
     return 'coins',200+60*day
 
 def december_claimed(uid):
-    with sqlite3.connect(NOVEMBER_DB,timeout=15) as db:
+    with sqlite3.connect(EVENT_DB,timeout=15) as db:
         db.execute('CREATE TABLE IF NOT EXISTS december_claims '
                    '(user_id INTEGER NOT NULL,reward_day TEXT NOT NULL,claimed_at TEXT NOT NULL,PRIMARY KEY(user_id,reward_day))')
         return {r[0] for r in db.execute('SELECT reward_day FROM december_claims WHERE user_id=? AND reward_day LIKE ?', (uid,'2026-12-%'))}
@@ -2427,7 +2218,8 @@ def december_calendar_view(uid):
           'Пропущенные подарки не сгорают.\n\n'
           f'Доступно: <b>{available}</b>\n'
           '🎁 Забрать · ✅ Получено · 🔒 Не открыто\n\n'
-          'Особые награды: 10, 20, 25 и 31 декабря.\n'
+          '🎆 31 декабря: золотой кейс и титул «Новый год 2027»!\n'
+          'Особые награды: 10, 20 и 25 декабря.\n'
           'Каждый подарок выдаётся один раз.')
     return text,kb
 
@@ -2454,20 +2246,32 @@ def december_claim_many(uid,days=None):
         return 0,'⚠️ Openbot API недоступен. Награды не выданы.'
     try:
         with sqlite3.connect(DB_NAME,timeout=15) as db:
-            db.execute('ATTACH DATABASE ? AS event',(str(NOVEMBER_DB),))
+            db.execute('ATTACH DATABASE ? AS event',(str(EVENT_DB),))
             db.execute('CREATE TABLE IF NOT EXISTS event.december_claims '
                        '(user_id INTEGER NOT NULL,reward_day TEXT NOT NULL,claimed_at TEXT NOT NULL,PRIMARY KEY(user_id,reward_day))')
             db.execute('CREATE TABLE IF NOT EXISTS event.winter_players '
                        '(user_id INTEGER PRIMARY KEY,snowflakes INTEGER NOT NULL DEFAULT 0)')
             db.execute('CREATE TABLE IF NOT EXISTS event.winter_cases '
                        '(user_id INTEGER NOT NULL,case_key TEXT NOT NULL,count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(user_id,case_key))')
+            db.execute('CREATE TABLE IF NOT EXISTS event.winter_owned_titles '
+                       '(user_id INTEGER NOT NULL, title_key TEXT NOT NULL, price INTEGER DEFAULT 0, '
+                       'PRIMARY KEY(user_id,title_key))')
             db.execute('BEGIN IMMEDIATE')
             if not db.execute('SELECT 1 FROM users WHERE user_id=?',(uid,)).fetchone():
                 return 0,'Создай профиль: /start.'
             count=coins=snow=cases=0
+            title_awarded=False
             for day in selected:
                 cur=db.execute('INSERT OR IGNORE INTO event.december_claims(user_id,reward_day,claimed_at) VALUES(?,?,?)',
                     (uid,f'2026-12-{day:02d}',datetime.now(_LAUNCH_TZ).isoformat()))
+                # 31 декабря — бесплатный праздничный титул, даже если игрок
+                # забрал этот день до установки обновления. Повторной выдачи нет.
+                if day==31:
+                    title_cur=db.execute(
+                        'INSERT OR IGNORE INTO event.winter_owned_titles(user_id,title_key,price) '
+                        'VALUES(?,?,0)', (uid,'winter_2027'))
+                    if title_cur.rowcount==1:
+                        title_awarded=True
                 if cur.rowcount!=1:continue
                 kind,n=december_reward(day)
                 if kind=='coins':
@@ -2479,12 +2283,14 @@ def december_claim_many(uid,days=None):
                     db.execute("INSERT INTO event.winter_cases(user_id,case_key,count) VALUES(?,'gold',?) "
                                'ON CONFLICT(user_id,case_key) DO UPDATE SET count=count+excluded.count',(uid,n));cases+=n
                 count+=1
-        if count==0:return 0,'✅ Все подарки уже получены.'
-        lines=[f'🎉 Получено подарков: {count}!']
+        if count==0 and not title_awarded:
+            return 0,'✅ Все подарки уже получены.'
+        lines=[f'🎉 Получено подарков: {count}!' if count else '🎉 Дополнительная награда получена!']
         if coins:lines.append(f'💰 +{coins} монет')
         if snow:lines.append(f'❄️ +{snow} снежинок')
         if cases:lines.append(f'🎁 +{cases} золотых кейсов')
-        return count,'\n'.join(lines)
+        if title_awarded:lines.append('🏅 Титул «Новый год 2027»')
+        return count + int(title_awarded and count==0),'\n'.join(lines)
     except Exception:
         logging.getLogger('random_bot.december').exception('Ошибка декабрьского календаря uid=%s',uid)
         return 0,'⚠️ Ошибка выдачи подарков. Проверь /logs.'
@@ -2494,8 +2300,7 @@ def december_calendar_callback(call):
     data=call.data or '';uid=call.from_user.id
     if data=='dec_cal_back':
         bot.answer_callback_query(call.id)
-        return bot.edit_message_text('🏠 Главное меню',call.message.chat.id,call.message.message_id,
-                                     reply_markup=main_mune())
+        return _ui_edit(call, '🏠 <b>Главное меню Random Bot</b>', main_mune())
     if data=='dec_cal_open':
         bot.answer_callback_query(call.id)
         text,kb=december_calendar_view(uid)
@@ -2528,10 +2333,9 @@ def december_calendar_reply(message):
     return december_show_calendar(message.chat.id,message.from_user.id)
 
 @bot.message_handler(commands=['calendar'])
-def november_calendar_command(message):
-    if december_today() >= datetime(2026,12,1).date():
-        return december_show_calendar(message.chat.id,message.from_user.id)
-    november_show_calendar(message.chat.id, message.from_user.id)
+def december_calendar_main_command(message):
+    # До 1 декабря показываем закрытые дни, никаких ноябрьских наград.
+    return december_show_calendar(message.chat.id, message.from_user.id)
 
 
 @bot.message_handler(commands=['menu'])
@@ -2547,55 +2351,18 @@ def november_menu_command(message):
         )
 
 
-@bot.message_handler(func=lambda message: (
-    (message.text or '').strip() == '📅 Календарь ноября'
-))
-def november_calendar_reply(message):
-    if december_today() >= datetime(2026,12,1).date():
-        return december_show_calendar(message.chat.id,message.from_user.id)
-    november_show_calendar(message.chat.id, message.from_user.id)
+# Старые кнопки из сообщений до патча ведут в декабрь, а не выдают ноябрьские награды.
+@bot.message_handler(func=lambda message: (message.text or '').strip() == '📅 Календарь ноября')
+def legacy_november_calendar_reply(message):
+    return december_show_calendar(message.chat.id, message.from_user.id)
 
-
-@bot.callback_query_handler(func=lambda call: bool(call.data) and (
-    call.data.startswith('nov_cal_')
-))
-def november_calendar_callback(call):
-    data = call.data or ''
-    uid = call.from_user.id
-    chat_id = call.message.chat.id
-    if data == 'nov_cal_back':
-        bot.answer_callback_query(call.id)
+@bot.callback_query_handler(func=lambda call: bool(call.data) and call.data.startswith('nov_cal_'))
+def legacy_november_calendar_callback(call):
+    bot.answer_callback_query(call.id, '📅 Теперь доступен декабрьский календарь')
+    if call.data == 'nov_cal_back':
         return _ui_edit(call, '🏠 Главное меню Random Bot', main_mune())
-    if data == 'nov_cal_open':
-        bot.answer_callback_query(call.id)
-        text,kb=november_calendar_view(uid)
-        return _ui_edit(call,text,kb)
-    if data == 'nov_cal_claim_all':
-        count, notice = november_claim_many(uid)
-        # Только всплывающее окно: не засоряем чат сообщением о наградах.
-        bot.answer_callback_query(call.id, notice[:190], show_alert=True)
-    elif data == 'nov_cal_refresh':
-        bot.answer_callback_query(call.id, 'Календарь обновлён')
-    elif data.startswith('nov_cal_day:'):
-        raw_day = data.partition(':')[2]
-        if not raw_day.isdecimal():
-            return bot.answer_callback_query(call.id, 'Неверная дата', show_alert=True)
-        _, notice = november_claim(uid, int(raw_day))
-        bot.answer_callback_query(call.id, notice[:190], show_alert=True)
-    else:
-        return bot.answer_callback_query(call.id, 'Неизвестная кнопка')
-
-    refreshed, keyboard = november_calendar_view(uid)
-    try:
-        bot.edit_message_text(
-            refreshed, chat_id=chat_id, message_id=call.message.message_id,
-            reply_markup=keyboard, parse_mode='HTML',
-        )
-    except apihelper.ApiTelegramException as exc:
-        if 'message is not modified' not in str(exc).lower():
-            bot.send_message(
-                chat_id, refreshed, reply_markup=keyboard, parse_mode='HTML'
-            )
+    text, keyboard = december_calendar_view(call.from_user.id)
+    return _ui_edit(call, text, keyboard)
 
 
 # ============ 🎄 Новый год и день рождения комьюнити ============
@@ -2662,49 +2429,87 @@ def start_bot(message):
             reply_markup=main_mune()
         )
 
+def _help_role(uid):
+    """Only server-confirmed Openbot ID roles grant an admin help section."""
+    try:
+        info = openbot.get_user(uid)
+        if isinstance(info, dict) and info.get('exists'):
+            role = str(info.get('status') or 'user').strip().lower()
+            if role in {'owner', 'developer', 'admin', 'tester', 'coder', 'user'}:
+                return role
+    except Exception:
+        logging.getLogger('random_bot.help').warning('Openbot ID role unavailable for %s', uid)
+    return 'user'
+
+
+def _help_text(role):
+    common = (
+        '📖 <b>ПОМОЩЬ RANDOM BOT</b>\n'
+        '━━━━━━━━━━━━━━━━━━\n'
+        f'🎭 Статус: <b>{html.escape(STATUS.get(role, ROLE.get(role, role)))}</b>\n\n'
+        '👤 <b>КОМАНДЫ ИГРОКА</b>\n'
+        '/start — запустить бота\n'
+        '/menu — главное меню\n'
+        '/help — список доступных команд\n'
+        '/profile — игровой профиль\n'
+        '/id_profile — глобальный профиль Openbot ID\n'
+        '/calendar — текущий адвент-календарь\n'
+        '/december — календарь декабря 2026\n'
+        '/my_titles — мои титулы\n'
+        '/leaders — таблица лидеров\n'
+        '/game_stop — выйти из текущей игры\n'
+        '/sell_emoji — выставить эмодзи на рынок\n'
+        '/bio — изменить описание Openbot ID\n'
+        '/feedback — отзыв разработчикам\n'
+        '/ban_info — информация о блокировке\n'
+        '/support — поддержка (в разработке)\n'
+        '/appeal — обращение (в разработке)'
+    )
+    if role not in {'admin', 'developer', 'owner'}:
+        return common + '\n\n🎄 <i>Winter Release 2026</i>'
+    admin = (
+        '\n\n🛡 <b>АДМИНИСТРИРОВАНИЕ</b>\n'
+        '/ban @username 7d Причина — локальный бан\n'
+        '/unban @username — снять бан\n'
+        '/hard_ban @username 7d Причина — строгий бан\n'
+        '/unhard_ban @username — снять строгий бан\n'
+        '/global_ban @username 7d Причина — глобальный бан\n'
+        '/global_unban @username — снять глобальный бан\n'
+        '/global_hard_ban @username 7d Причина — глобальный строгий бан\n'
+        '/global_unhard_ban @username — снять глобальный строгий бан\n'
+        '/ban_info @username — проверить блокировку\n'
+        '/sendall Текст — рассылка\n'
+        '/give_coins @username 100 — выдать монеты\n'
+        '/take_coins @username 100 — снять монеты\n'
+        '/level_up @username 20 — изменить уровень\n'
+        '/gift @username 🎁 — подарить эмодзи\n'
+        '/tech — управление техработами\n'
+        '/launch — режим зимнего запуска\n'
+        '/features — новые игры и этапы релиза\n'
+        '/testgame memory — тест новых игр\n'
+        '/get_status @username — статус Openbot ID'
+    )
+    if role in {'developer', 'owner'}:
+        admin += (
+            '\n\n💻 <b>РАЗРАБОТКА</b>\n'
+            '/reply_off — временно ограничить Reply\n'
+            '/reply_on — вернуть прежние режимы\n'
+            '/logs — последние ошибки (при наличии доступа)\n'
+            '/get_status @username tester 2 — управление ролями (при наличии прав)'
+        )
+    return common + admin + '\n\n<i>Доступ к командам проверяется отдельно.</i>'
+
+
 @bot.message_handler(commands=['help'])
 def bot_help(message):
     uid = message.from_user.id
     reason = check_ban(uid)
     if reason:
-        bot.reply_to(message, f"🚫 Вы заблокированы!\nПричина: {reason}")
-        return
-    
-    text = """Доступные команды:
-/start - запуск бота
-/help - список команд
-/sell_emoji - продать эмодзи на аукцион
-/id_profile - открыть глобальный аккаунт
-/game_stop - остановить игру
-/bio - изменить био в глобальном аккаунте
-/feedback - оставить отзыв разработчикам
-
-Административные команды:
-/ban - забанить пользователя
-/unban - разбанить пользователя
-/sendall - рассылка сообщения всем
-/give_coins - выдать монеты
-/take_coins - забрать монеты
-/level_up - изменить уровень игрока
-/gift - подарить предмет
-/hard_ban - строгий бан
-/unhard_ban - снять строгий бан
-/global_ban - глобальный бан по всей сети
-/global_unban - снять глобальный бан
-/global_hard_ban - полная глобальная блокировка
-/global_unhard_ban - снять глобальный HARD BAN
-/ban_info - причина и срок блокировки
-/support - поддержка (пока в разработке)\n/appeal - поддержка (пока в разработке)
-/calendar - ноябрьский календарь с 30 кнопками
-/menu - обновить главное меню
-/tech - панель частичных техработ (админ)
-/my_titles - коллекция титулов
-/get_status @username - посмотреть глобальный статус
-/get_status @username tester 2 - изменить глобальный статус
-
-<i>Обновлено 2026 года</i>"""
-    msg = bot.send_message(message.chat.id, 'Загрузка...')
-    bot.edit_message_text(text, message_id=msg.message_id, chat_id=message.chat.id, parse_mode="HTML")
+        return bot.reply_to(message, f'🚫 Вы заблокированы!\nПричина: {reason}')
+    role = _help_role(uid)
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton('🏠 Главное меню', callback_data='back'))
+    bot.send_message(message.chat.id, _help_text(role), reply_markup=kb, parse_mode='HTML')
 
 @bot.message_handler(commands=['game_stop'])
 def stop_game(message):

@@ -25,7 +25,7 @@ from openbot_api import ROLE # отдельная база события Random
 
 
 # ======= Настройка ======
-DB_NAME = str(Path(__file__).resolve().parent / "Random_bot.1.6.db")
+DB_NAME = str(Path(__file__).resolve().parent / "Random_bot.1.7.db")
 WINTER_DB_NAME = "Newyear_random.db"
 DEVELOPER_CHAT_ID = 1234566
 # ========================

@@ -1,3 +1,4 @@
+# test
 """Random Bot holiday SQLite database: promos, gifts, titles, claims.
 
 All holiday tables reside only in Newyear_random.db. Main game coins and

@@ -27,15 +27,13 @@ from openbot_api import ROLE # отдельная база события Random
 # ======= Настройка ======
 DB_NAME = str(Path(__file__).resolve().parent / "Random_bot.1.6.db")
 WINTER_DB_NAME = "Newyear_random.db"
-DEVELOPER_CHAT_ID = 6265920670
-# test
-KB_TYPE = False # Замените на свой ID
+DEVELOPER_CHAT_ID = 1234566
 # ========================
-TOKEN = "8493714047:AAGAVFDc_nvDR2S6LLpgDBhx85dikxJVMMY"
+TOKEN = ""
 bot = telebot.TeleBot(TOKEN, use_class_middlewares=True)
 
-OPENBOT_KEY = "openbot_staff_live_x7TDlXzrayMYFUhltO8VQJVLTuW_t8894leIPW087XA"
-openbot = openbot_api.OpenbotAPI(api_key="openbot_staff_live_x7TDlXzrayMYFUhltO8VQJVLTuW_t8894leIPW087XA", bot=bot)
+OPENBOT_KEY = ""
+openbot = openbot_api.OpenbotAPI(api_key="OPENBOT_KEY", bot=bot)
 
 @bot.message_handler(commands=['test_error'])
 def test_error(message):
@@ -5347,7 +5345,7 @@ def handle_callback(call):
                 if 'message is not modified' in str(exc).lower():
                     return
                 raise
-        if not KB_TYPE:
+
             toggle_user_setting(user_id, 'kb_type')
             kb_type, _, _ = get_user_settings(user_id)
     
@@ -5382,8 +5380,6 @@ def handle_callback(call):
                         reply_markup=settings_menu(user_id))
        
             bot.answer_callback_query(call.id, "Вид кнопок изменен!")
-        else:
-            bot.answer_callback_query(call.id, '🔴 Переключение Reply-клавиатуры запрещено разработчиками!', show_alert=True)
 
     elif call.data == 'toggle_notif':
         toggle_user_setting(user_id, 'notifications')

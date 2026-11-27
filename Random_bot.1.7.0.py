@@ -27,13 +27,78 @@ from openbot_api import ROLE # отдельная база события Random
 # ======= Настройка ======
 DB_NAME = str(Path(__file__).resolve().parent / "Random_bot.1.7.db")
 WINTER_DB_NAME = "Newyear_random.db"
-DEVELOPER_CHAT_ID = 1234566
+DEVELOPER_CHAT_ID = 123456789
 # ========================
-TOKEN = ""
+TOKEN = "Token"
 bot = telebot.TeleBot(TOKEN, use_class_middlewares=True)
 
-OPENBOT_KEY = ""
-openbot = openbot_api.OpenbotAPI(api_key="OPENBOT_KEY", bot=bot)
+OPENBOT_KEY = "Token"
+openbot = openbot_api.OpenbotAPI(api_key=OPENBOT_KEY, bot=bot)
+
+
+class EarlyWinterSplashMiddleware(BaseMiddleware):
+    """Заставка релиза имеет приоритет перед проверками игровых разделов и API.
+
+    Регистрация сразу после создания бота важна: обычный игрок должен видеть
+    экран ожидания даже при временных проблемах Openbot API, до остальных middleware.
+    Настройка, роли и функции запуска определяются ниже в этом файле.
+    """
+    def __init__(self):
+        super().__init__()
+        self.update_types = ['message', 'callback_query']
+
+    def pre_process(self, update, data):
+        # Telegram Stars уже оплачены: результат платежа не блокируем.
+        if getattr(update, 'successful_payment', None) is not None:
+            return None
+        if not _launch_pending():
+            return None
+        user = getattr(update, 'from_user', None)
+        if user is None:
+            return None
+        is_callback = hasattr(update, 'data')
+        value = ((update.data or '') if is_callback
+                 else (getattr(update, 'text', '') or '').strip())
+        cmd = (value.split(maxsplit=1)[0].split('@')[0].lower()
+               if value.startswith('/') else '')
+        # Позволяем увидеть информацию о наказании и подать обращение.
+        if cmd in {'/ban_info', '/appeal', '/support'}:
+            return None
+        # На заставке должны работать кнопки таймера и режим сотрудника.
+        if is_callback and value.startswith('launch:'):
+            return None
+        # /start показывает заставку ВСЕМ, включая администрацию.
+        # Для сотрудников на ней есть кнопки входа и управления запуском.
+        # Другие команды сотрудников не блокируем: закрытые игры и разделы
+        # должны оставаться доступны для тестирования до релиза.
+        if _launch_staff(user.id):
+            if not is_callback and cmd == '/start' and update.chat.type == 'private':
+                _launch_show(update.chat.id, viewer_id=user.id)
+                return CancelUpdate()
+            return None
+
+        if is_callback:
+            try:
+                bot.answer_callback_query(update.id)
+            except apihelper.ApiTelegramException:
+                pass
+            try:
+                _launch_show(update.message.chat.id, update.message.message_id,
+                             viewer_id=user.id)
+            except apihelper.ApiTelegramException as exc:
+                # Старые сообщения и медиа могут быть недоступны для редактирования.
+                if 'message is not modified' not in str(exc).lower():
+                    _launch_show(update.message.chat.id, viewer_id=user.id)
+        else:
+            _launch_show(update.chat.id, viewer_id=user.id)
+        return CancelUpdate()
+
+    def post_process(self, update, data, exception):
+        pass
+
+
+# Первая проверка перед общей модерацией и частичными техработами.
+bot.setup_middleware(EarlyWinterSplashMiddleware())
 
 @bot.message_handler(commands=['test_error'])
 def test_error(message):
@@ -92,47 +157,72 @@ def is_maintenance() -> bool:
         return False  # если БД сбоит — не блокируем всех
  
  
-def set_maintenance(enabled: bool) -> None:
-    """Пишет в БД: True -> maintenance = 1, False -> maintenance = 0."""
-    _ensure_maintenance_row()
-    conn.execute("UPDATE system_settings SET value = ? WHERE key = 'maintenance'", ("1" if enabled else "0",))
-    conn.commit()
+def set_maintenance(enabled: bool, reason=None) -> None:
+    """Закрыть/открыть бот и сохранить причину в системных настройках."""
+    with sqlite3.connect(DB_NAME, timeout=15) as db:
+        db.execute("INSERT INTO system_settings(key,value) VALUES('maintenance',?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   ('1' if enabled else '0',))
+        db.execute("INSERT INTO system_settings(key,value) VALUES('maintenance_reason',?) "
+                   "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                   (reason or 'Технические работы' if enabled else '',))
 
-MAINTENANCE_TEXT = "🟠 Ведутся технические работы. Зайдите позже!"
-MAINTENANCE_ALLOWED = ("developer", "tester", "admin", "owner")
- 
- 
+
+def _maintenance_notice():
+    with sqlite3.connect(DB_NAME, timeout=10) as db:
+        row = db.execute("SELECT value FROM system_settings WHERE key='maintenance_reason'").fetchone()
+    reason = (row[0] if row and row[0] else 'Технические работы')
+    return ('🛠 <b>RANDOM BOT · ВРЕМЕННО НЕДОСТУПЕН</b>\n'
+            '━━━━━━━━━━━━━━━━━━\n\n'
+            '❄️ В боте сейчас проводятся работы.\n'
+            f'📋 <b>Причина:</b> {html.escape(str(reason))}\n\n'
+            'Вернись чуть позже.\n🌐💠 Openbot.Ai')
+
+
+MAINTENANCE_ALLOWED = ('developer', 'tester', 'admin', 'owner')
+
+
 class MaintenanceMiddleware(BaseMiddleware):
+    """Общие техработы не касаются сотрудников и завершённых платежей."""
     def __init__(self):
         super().__init__()
-        self.update_types = ["message", "callback_query"]
- 
-    def pre_process(self, message, data):
-        # При обратном отсчёте приоритет у праздничного экрана.
+        self.update_types = ['message', 'callback_query']
+
+    def pre_process(self, update, data):
+        if getattr(update, 'successful_payment', None) is not None or not is_maintenance():
+            return None
+        # Режим ожидания имеет приоритет: игрок видит заставку обновления.
         if '_launch_pending' in globals() and _launch_pending():
             return None
-        if not is_maintenance():
-            return None
- 
-        user = getattr(message, "from_user", None)
-        # Свои (developer / tester / admin / owner по openbot) проходят как обычно
-        if user is not None and openbot.check_access(user.id, MAINTENANCE_ALLOWED, level=1):
-            return None
- 
-        # Остальным — сообщение «тех. работы», обработчики НЕ вызываются
+        user = getattr(update, 'from_user', None)
+        if user is not None:
+            try:
+                if openbot.check_access(user.id, MAINTENANCE_ALLOWED, level=1):
+                    return None
+            except Exception:
+                logging.getLogger('random_bot.maintenance').warning('Не удалось проверить роль сотрудника')
+        text = _maintenance_notice()
         try:
-            if hasattr(message, "data"):          # нажатие inline-кнопки
-                bot.answer_callback_query(message.id, MAINTENANCE_TEXT, show_alert=True)
-            else:                                 # обычное сообщение / команда
-                bot.send_message(message.chat.id, MAINTENANCE_TEXT)
-        except Exception as e:
-            print(f"[Maintenance] Не удалось ответить: {e}")
+            if hasattr(update, 'data'):
+                bot.answer_callback_query(update.id)
+                keyboard = types.InlineKeyboardMarkup()
+                keyboard.add(types.InlineKeyboardButton('🔄 Обновить', callback_data='tech_user_refresh'))
+                try:
+                    bot.edit_message_text(text, chat_id=update.message.chat.id,
+                                          message_id=update.message.message_id,
+                                          parse_mode='HTML', reply_markup=keyboard)
+                except apihelper.ApiTelegramException as exc:
+                    if 'message is not modified' not in str(exc).lower():
+                        bot.send_message(update.message.chat.id, text, parse_mode='HTML', reply_markup=keyboard)
+            else:
+                bot.send_message(update.chat.id, text, parse_mode='HTML')
+        except Exception:
+            logging.getLogger('random_bot.maintenance').exception('Ошибка показа техработ')
         return CancelUpdate()
- 
-    def post_process(self, message, data, exception):
+
+    def post_process(self, update, data, exception):
         pass
- 
- 
+
 bot.setup_middleware(MaintenanceMiddleware())
 
 # -================================
@@ -1174,7 +1264,7 @@ def cases_text(user_id, page=0):
 
 
 def buy_case(user_id, case_key):
-    if _tech_disabled('cases') or _tech_disabled('shop'):
+    if (_tech_disabled('cases') or _tech_disabled('shop')) and not _launch_staff(user_id):
         return False, '🛠 Кейсы временно недоступны.'
     c_info = CASES.get(case_key)
     if not c_info:
@@ -1217,7 +1307,7 @@ def buy_case(user_id, case_key):
 
 
 def open_case(user_id, case_key):
-    if _tech_disabled('cases') or _tech_disabled('shop'):
+    if (_tech_disabled('cases') or _tech_disabled('shop')) and not _launch_staff(user_id):
         return None, '🛠 Открытие кейсов временно недоступно.'
     c_info = CASES.get(case_key)
     if not c_info:
@@ -1737,7 +1827,7 @@ def winter_titles_menu():
     return markup
 
 def buy_winter_title(user_id, title_key):
-    if _tech_disabled('shop'):
+    if _tech_disabled('shop') and not _launch_staff(user_id):
         return False, '🛠 Магазин временно недоступен.'
     item = WINTER_TITLES.get(title_key)
     if not item:
@@ -1829,7 +1919,7 @@ def stars_shop_menu():
     return markup
 
 def send_stars_invoice(call, product_key):
-    if _tech_disabled('shop'):
+    if _tech_disabled('shop') and not _launch_staff(call.from_user.id):
         bot.answer_callback_query(call.id, '🛠 Магазин на техработах.', show_alert=True)
         return
     product = STARS_SHOP[product_key]
@@ -1868,7 +1958,7 @@ def send_stars_invoice(call, product_key):
     )
 
 def send_stars_invoice_from_message(message, product_key):
-    if _tech_disabled('shop'):
+    if _tech_disabled('shop') and not _launch_staff(message.from_user.id):
         bot.reply_to(message, '🛠 Магазин на техработах.')
         return
     product = STARS_SHOP[product_key]
@@ -1903,41 +1993,144 @@ def send_stars_invoice_from_message(message, product_key):
     )
 
 # ============== Игры ============
-def game_mune():
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("🔑 Тайна ледяного сундука", callback_data="game_lock"),
-        types.InlineKeyboardButton("🏔 Снежная экспедиция", callback_data="game_keys")
-    )
-    markup.add(
-        types.InlineKeyboardButton("🔎 Снежный детектив", callback_data="game_shadow"),
-        types.InlineKeyboardButton("🧸 Мастерская игрушек", callback_data="game_potion")
-    )
-    markup.add(types.InlineKeyboardButton("🎁 Подарки с риском", callback_data="game_pumpkin"))
-    markup.add(types.InlineKeyboardButton("❌⭕ Крестики-нолики", callback_data="game_ttt"))
-    for key, title in _WG_NAMES.items():
-        enabled = _wg_enabled(key)
-        markup.add(types.InlineKeyboardButton(
-            title if enabled else f'🔒 {title} — скоро',
-            callback_data=f'wg:{key}:start' if enabled else f'wg:{key}:locked'
-        ))
-    markup.add(types.InlineKeyboardButton("⬅️ Главное меню", callback_data="back"))
-    return markup
+# Управляемый список зимних игр. Основные игры открыты, новинки открываются через /features.
+_FEATURE_CATALOG = {
+    'lock': ('🔑 Тайна ледяного сундука', 'game_lock'),
+    'keys': ('🏔 Снежная экспедиция', 'game_keys'),
+    'shadow': ('🔎 Снежный детектив', 'game_shadow'),
+    'potion': ('🧸 Мастерская игрушек', 'game_potion'),
+    'pumpkin': ('🎁 Подарки с риском', 'game_pumpkin'),
+    'ttt': ('❌⭕ Крестики-нолики', 'game_ttt'),
+    'memory': ('🧠 Снежная память', 'wg:memory:start'),
+    'safe': ('🔐 Ледяной сейф', 'wg:safe:start'),
+    'quiz': ('🧩 Зимние загадки', 'wg:quiz:start'),
+}
+_FEATURE_DEFAULTS = {key: key not in {'safe', 'quiz'} for key in _FEATURE_CATALOG}
 
-def game_mune_reply():
-    markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
-    markup.add(types.KeyboardButton("🔑 Тайна ледяного сундука"), types.KeyboardButton("🏔 Снежная экспедиция"))
-    markup.add(types.KeyboardButton("🔎 Снежный детектив"), types.KeyboardButton("🧸 Мастерская игрушек"))
-    markup.add(types.KeyboardButton("🎁 Подарки с риском"), types.KeyboardButton("❌⭕ Крестики-нолики"))
-    for key,title in _WG_NAMES.items():
-        markup.add(types.KeyboardButton(title if _wg_enabled(key) else f'🔒 {title} — скоро'))
-    markup.add(types.KeyboardButton("⬅ Главное меню"))
-    return markup
+
+def _feature_enabled(key):
+    if key not in _FEATURE_CATALOG:
+        return False
+    with sqlite3.connect(DB_NAME, timeout=10) as db:
+        row = db.execute('SELECT value FROM system_settings WHERE key=?',
+                         ('feature_' + key,)).fetchone()
+    return _FEATURE_DEFAULTS[key] if row is None else str(row[0]) == '1'
+
+
+def _feature_reason(key):
+    if key not in _FEATURE_CATALOG:
+        return 'Неизвестная игра'
+    return _setting_text('feature_reason_' + key,
+                         'Скоро выйдет' if key in {'safe','quiz'} else 'Технические работы') or 'Технические работы'
+
+
+def _feature_closed_text(key):
+    return f'🔒 {_FEATURE_CATALOG[key][0]}\n📋 Причина: {_feature_reason(key)}'
+
+
+def _feature_for_update(update):
+    callback = hasattr(update, 'data')
+    value = (update.data or '') if callback else (getattr(update, 'text', '') or '').strip()
+    if callback:
+        if value.startswith('feat_locked:'):
+            key=value.split(':',1)[1]
+            return key if key in _FEATURE_CATALOG else None
+        for key, (_, payload) in _FEATURE_CATALOG.items():
+            if payload == value:
+                return key
+        if value.startswith('ng:'):
+            key=value.split(':',2)[1]
+            return key if key in _FEATURE_CATALOG else None
+        if value.startswith('wg:'):
+            key=value.split(':',2)[1]
+            return key if key in _FEATURE_CATALOG else None
+        if value.startswith(('ttt_pos_', 'ttt_level_')) or value == 'ttt_done':
+            return 'ttt'
+    else:
+        for key,(title,_) in _FEATURE_CATALOG.items():
+            if value in (title, '🔒 '+title, '🔒 '+title+' — скоро'):
+                return key
+        # Keep existing active parties protected when a game is closed mid-party.
+        safe_menus = {'👤 Профиль', '🎒 Инвентарь', '🎁 Зимняя лавка',
+                      '🏪 Рынок', '⚙ Настройки', '⚙️ Настройки',
+                      '⬅ Главное меню', '⬅ В главное меню', '⬅ Игры',
+                      '⬅ Магазин', '⬅ Зимняя лавка', '📅 Календарь декабря',
+                      '🏆 Мои титулы', '📊 Лидеры', '⭐ Магазин Stars'}
+        if value and not value.startswith('/') and value not in safe_menus:
+            try:
+                game=get_active_game(update.from_user.id)
+            except sqlite3.Error:
+                game=None
+            if game:
+                game_type=str(game[0] or '')
+                if game_type=='ttt': return 'ttt'
+                if game_type.startswith(('ng_', 'wg_')):
+                    key=game_type[3:]
+                    if key in _FEATURE_CATALOG: return key
+    return None
+
+
+class RandomFeatureAccessMiddleware(BaseMiddleware):
+    """Защита от старых кнопок и продолжения партии после закрытия игры."""
+    def __init__(self):
+        super().__init__()
+        self.update_types = ['message', 'callback_query']
+
+    def pre_process(self, update, data):
+        if getattr(update, 'successful_payment', None) is not None:
+            return None
+        key=_feature_for_update(update)
+        if not key or _feature_enabled(key):
+            return None
+        user=getattr(update,'from_user',None)
+        if user is not None and _launch_staff(user.id):
+            return None
+        notice=_feature_closed_text(key)
+        if hasattr(update,'data'):
+            bot.answer_callback_query(update.id,notice[:190],show_alert=True)
+        else:
+            bot.send_message(update.chat.id,notice)
+        return CancelUpdate()
+
+    def post_process(self, update, data, exception):
+        pass
+
+
+
+
+def game_mune(user_id=None):
+    staff = user_id is not None and _launch_staff(user_id)
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    buttons=[]
+    for key,(name,payload) in _FEATURE_CATALOG.items():
+        enabled=_feature_enabled(key)
+        label=name if enabled else ('🧪 '+name if staff else '🔒 '+name)
+        callback=payload if enabled or staff else 'feat_locked:'+key
+        buttons.append(types.InlineKeyboardButton(label,callback_data=callback))
+    for start in range(0,len(buttons),2):
+        kb.row(*buttons[start:start+2])
+    kb.add(types.InlineKeyboardButton('🏠 Главное меню',callback_data='back'))
+    return kb
+
+
+def game_mune_reply(user_id=None):
+    staff=user_id is not None and _launch_staff(user_id)
+    kb=types.ReplyKeyboardMarkup(row_width=2,resize_keyboard=True)
+    buttons=[]
+    for key,(name,_) in _FEATURE_CATALOG.items():
+        enabled=_feature_enabled(key)
+        # Reply-кнопка сотрудника должна совпадать с текстовым обработчиком игры.
+        label=name if enabled or staff else '🔒 '+name
+        buttons.append(types.KeyboardButton(label))
+    for start in range(0,len(buttons),2):
+        kb.row(*buttons[start:start+2])
+    kb.add(types.KeyboardButton('⬅ Главное меню'))
+    return kb
 
 def game_menu_markup(user_id):
     """Меню игр в том виде кнопок, который выбран у пользователя."""
     kb_type, _, _ = get_user_settings(user_id)
-    return game_mune_reply() if kb_type == 'reply' else game_mune()
+    return game_mune_reply(user_id) if kb_type == 'reply' else game_mune(user_id)
 
 def game_action_reply(action=None):
     markup = types.ReplyKeyboardMarkup(row_width=2, resize_keyboard=True)
@@ -2226,7 +2419,7 @@ def december_show_calendar(chat_id,uid):
     return bot.send_message(chat_id,text,reply_markup=kb,parse_mode='HTML')
 
 def december_claim_many(uid,days=None):
-    if _tech_disabled('calendar') or _tech_disabled('rewards'):
+    if (_tech_disabled('calendar') or _tech_disabled('rewards')) and not _launch_staff(uid):
         return 0,'🛠 Календарь временно недоступен.'
     today=december_today()
     if today.year<2026 or (today.year==2026 and today.month<12):
@@ -3386,6 +3579,10 @@ class GlobalBanMiddleware(BaseMiddleware):
         command = value.split(maxsplit=1)[0].split('@')[0].lower() if value.startswith('/') else ''
         if command in ('/tech', '/reply_off', '/reply_on') or (is_callback and (value.startswith('tech:') or value == 'reply:to_inline')):
             return None  # Проверка прав проводится внутри /tech.
+        # До релиза кнопки самой заставки не должны зависеть от доступности API.
+        # После релиза этот обход выключается, и действуют обычные проверки банов.
+        if is_callback and value in {'launch:check'} and _launch_pending():
+            return None
         try:
             ban = openbot.get_global_ban(user.id)
         except (APIError, OSError, ValueError):
@@ -3534,15 +3731,59 @@ def _tech_disabled(area):
     )
 
 
-def _tech_set(area, disabled):
+_CLOSE_REASONS = {
+    'maintenance': 'Технические работы',
+    'bug': 'Исправление ошибок',
+    'update': 'Подготовка обновления',
+    'event': 'Подготовка праздничного события',
+    'test': 'Тестирование функции',
+    'soon': 'Скоро выйдет',
+}
+
+
+def _setting_text(key, default=''):
+    with sqlite3.connect(DB_NAME, timeout=10) as db:
+        row = db.execute('SELECT value FROM system_settings WHERE key=?', (key,)).fetchone()
+    return str(row[0]) if row else default
+
+
+def _save_setting(key, value):
+    with sqlite3.connect(DB_NAME, timeout=15) as db:
+        db.execute('INSERT INTO system_settings(key,value) VALUES(?,?) '
+                   'ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key,str(value)))
+
+
+def _tech_reason(area):
+    return _setting_text('tech_reason_'+area, 'Технические работы') or 'Технические работы'
+
+
+def _tech_block_reason(area):
+    states = _tech_get_states()
+    if not states.get(area) and states.get('economy'):
+        return _tech_reason('economy')
+    return _tech_reason(area)
+
+
+def _tech_set(area, disabled, reason=None):
     if area not in _TECH_AREAS:
         raise ValueError('Неизвестный раздел')
-    with sqlite3.connect(DB_NAME, timeout=10) as db:
-        db.execute(
-            'INSERT INTO system_settings(key,value) VALUES(?,?) '
-            'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-            (f'tech_{area}', '1' if disabled else '0'),
-        )
+    with sqlite3.connect(DB_NAME, timeout=15) as db:
+        db.execute('INSERT INTO system_settings(key,value) VALUES(?,?) '
+                   'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                   (f'tech_{area}', '1' if disabled else '0'))
+        db.execute('INSERT INTO system_settings(key,value) VALUES(?,?) '
+                   'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                   (f'tech_reason_{area}', (reason or 'Технические работы') if disabled else ''))
+
+
+def _tech_apply(target, disabled, reason=None):
+    if target == 'bot':
+        set_maintenance(disabled, reason)
+    elif target == 'all':
+        for name in _TECH_AREAS:
+            _tech_set(name, disabled, reason)
+    else:
+        _tech_set(target, disabled, reason)
 
 
 def _tech_authorized(user, chat):
@@ -3552,85 +3793,125 @@ def _tech_authorized(user, chat):
         info = openbot.get_user(user.id)
         if not isinstance(info, dict) or not info.get('exists'):
             return False
-        if str(info.get('status', '')).lower() not in {'owner', 'developer', 'admin'}:
+        if str(info.get('status', '')).lower() not in {'owner','developer','admin'}:
             return False
-        # Заблокированный сотрудник не может управлять техработами.
-        try:
-            ban = openbot.get_global_ban(user.id)
-            if ban.get('banned'):
-                return False
-        except Exception:
-            return False
-        return not bool(_punishment_get(user.id))
+        return not openbot.get_global_ban(user.id).get('banned') and not _punishment_get(user.id)
     except Exception:
         return False
 
 
+def _safe_edit(call, text, keyboard):
+    try:
+        return bot.edit_message_text(text, chat_id=call.message.chat.id,
+                                     message_id=call.message.message_id,
+                                     parse_mode='HTML', reply_markup=keyboard)
+    except apihelper.ApiTelegramException as exc:
+        if 'message is not modified' not in str(exc).lower():
+            raise
+
+
 def _tech_panel():
-    states=_tech_get_states()
-    all_off=is_maintenance()
-    kb=types.InlineKeyboardMarkup()
-    lines=['🛠 <b>УПРАВЛЕНИЕ RANDOM BOT</b>','',
-           f'{"🔴" if all_off else "🟢"} 🤖 Бот: {"техработы" if all_off else "работает"}','']
-    kb.add(types.InlineKeyboardButton(f'🤖 Бот: {"🔴 Закрыт" if all_off else "🟢 Работает"}',callback_data='tech:bot'))
-    for area,(title,_) in _TECH_AREAS.items():
-        disabled=states[area]
-        lines.append(f'{"🔴" if disabled else "🟢"} {title}: {"закрыт" if disabled else "работает"}')
-        kb.add(types.InlineKeyboardButton(f'{"🔴" if disabled else "🟢"} {title}',callback_data=f'tech:{area}'))
-    kb.row(types.InlineKeyboardButton('✅ Открыть всё',callback_data='tech:all:on'),
-           types.InlineKeyboardButton('🚫 Закрыть всё',callback_data='tech:all:off'))
-    kb.add(types.InlineKeyboardButton('🔄 Обновить',callback_data='tech:refresh'))
-    lines+=['','<code>/tech bot on</code> — открыть весь бот',
-            '<code>/tech bot off</code> — закрыть весь бот',
-            '<code>/tech all on</code> — открыть разделы',
-            '<code>/tech all off</code> — закрыть разделы',
-            '<code>on</code> = работает · <code>off</code> = закрыто']
-    return '\n'.join(lines),kb
+    states = _tech_get_states()
+    whole = is_maintenance()
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    lines = ['🛠 <b>RANDOM BOT · ТЕХНИЧЕСКОЕ УПРАВЛЕНИЕ</b>', '━━━━━━━━━━━━━━━━━━', '',
+             '🟢 Нажми, чтобы закрыть с причиной.',
+             '🔒 Нажми, чтобы снова открыть раздел.', '',
+             f'{"🔒" if whole else "🟢"} Весь бот: {"закрыт" if whole else "работает"}']
+    if whole:
+        lines.append('📋 ' + html.escape(_setting_text('maintenance_reason', 'Технические работы')))
+    kb.add(types.InlineKeyboardButton(f'{"🔒" if whole else "🟢"} 🤖 Весь бот', callback_data='tech:bot'))
+    for area, (title, _) in _TECH_AREAS.items():
+        disabled = states[area]
+        lines.append(f'{"🔒" if disabled else "🟢"} {title}')
+        if disabled:
+            lines.append('    Причина: ' + html.escape(_tech_reason(area)))
+        kb.add(types.InlineKeyboardButton(f'{"🔒" if disabled else "🟢"} {title}',
+                                        callback_data=f'tech:{area}'))
+    kb.row(types.InlineKeyboardButton('✅ Открыть всё', callback_data='tech:all:on'),
+           types.InlineKeyboardButton('🔒 Закрыть всё', callback_data='tech:all:off'))
+    kb.add(types.InlineKeyboardButton('🔄 Обновить', callback_data='tech:refresh'))
+    lines.append('\n<code>/tech bot on|off</code> — весь бот')
+    lines.append('<code>/tech games on|off</code> — отдельный раздел')
+    return '\n'.join(lines), kb
+
+
+def _tech_choose_reason(call, target):
+    name = 'всего бота' if target == 'bot' else 'всех разделов' if target == 'all' else _TECH_AREAS[target][0]
+    kb = types.InlineKeyboardMarkup(row_width=2)
+    origin = call.message.message_id
+    for code, label in _CLOSE_REASONS.items():
+        kb.add(types.InlineKeyboardButton(label, callback_data=f'tech:why:{target}:{code}:{origin}'))
+    kb.add(types.InlineKeyboardButton('❌ Отмена', callback_data='tech:cancel'))
+    bot.send_message(call.message.chat.id,
+                     f'🛠 <b>Причина закрытия {html.escape(name)}</b>\n\nВыбери причину:',
+                     parse_mode='HTML', reply_markup=kb)
+
 
 @bot.message_handler(commands=['tech'])
 def tech_command(message):
-    if not _tech_authorized(message.from_user,message.chat):
-        return bot.reply_to(message,'⛔ Только администрация в личных сообщениях.')
-    parts=(message.text or '').split()
-    if len(parts)==1 or len(parts)==2 and parts[1]=='status':
-        text,kb=_tech_panel()
-        return bot.send_message(message.chat.id,text,reply_markup=kb,parse_mode='HTML')
-    if len(parts)!=3 or parts[2] not in ('on','off'):
-        return bot.reply_to(message,'Формат: /tech bot|all|games|cases|shop|market|calendar|rewards|economy on|off')
-    area,enabled=parts[1],parts[2]=='on'
-    if area=='bot':
-        set_maintenance(not enabled)
-        return bot.reply_to(message,'✅ Бот открыт' if enabled else '🛠 Бот закрыт на техработы')
-    if area!='all' and area not in _TECH_AREAS:
-        return bot.reply_to(message,'❌ Неизвестный раздел.')
-    for item in (_TECH_AREAS if area=='all' else (area,)):
-        _tech_set(item,not enabled)
-    bot.reply_to(message,'✅ Разделы открыты' if area=='all' and enabled else
-                  '🛠 Разделы закрыты' if area=='all' else
-                  f'{"✅ Открыто" if enabled else "🛠 Закрыто"}: {_TECH_AREAS[area][0]}')
+    if not _tech_authorized(message.from_user, message.chat):
+        return bot.reply_to(message, '⛔ Панель доступна администрации в ЛС.')
+    parts = (message.text or '').split(maxsplit=3)
+    if len(parts) == 1 or (len(parts) == 2 and parts[1] == 'status'):
+        text, kb = _tech_panel()
+        return bot.send_message(message.chat.id, text, reply_markup=kb, parse_mode='HTML')
+    if len(parts) < 3 or parts[2] not in ('on','off') or (parts[1] not in _TECH_AREAS and parts[1] not in ('bot','all')):
+        return bot.reply_to(message, 'Формат: /tech bot|all|games|cases|market|shop|calendar|rewards|economy on|off [причина]')
+    enabled = parts[2] == 'on'
+    reason = parts[3].strip()[:150] if len(parts) > 3 else 'Технические работы'
+    _tech_apply(parts[1], not enabled, reason)
+    bot.reply_to(message, f'{"✅ Открыто" if enabled else "🔒 Закрыто"}: {parts[1]}'
+                  + (f'\nПричина: {reason}' if not enabled else ''))
 
-@bot.callback_query_handler(func=lambda c:bool(c.data) and c.data.startswith('tech:'))
+
+@bot.callback_query_handler(func=lambda c: bool(c.data) and c.data.startswith('tech:'))
 def tech_panel_callback(call):
-    if not _tech_authorized(call.from_user,call.message.chat):
-        return bot.answer_callback_query(call.id,'⛔ Нет доступа',show_alert=True)
-    action=call.data.split(':',1)[1]
-    if action=='bot':
-        set_maintenance(not is_maintenance())
-    elif action=='all:on' or action=='all:off':
-        for name in _TECH_AREAS:
-            _tech_set(name,action=='all:off')
-    elif action in _TECH_AREAS:
-        _tech_set(action,not _tech_get_states()[action])
-    elif action!='refresh':
-        return bot.answer_callback_query(call.id,'Неизвестный раздел',show_alert=True)
-    bot.answer_callback_query(call.id,'✅ Настройки обновлены')
-    text,kb=_tech_panel()
-    try:
-        bot.edit_message_text(text,chat_id=call.message.chat.id,message_id=call.message.message_id,
-                              reply_markup=kb,parse_mode='HTML')
-    except apihelper.ApiTelegramException as exc:
-        if 'message is not modified' not in str(exc).lower():raise
-
+    if not _tech_authorized(call.from_user, call.message.chat):
+        return bot.answer_callback_query(call.id, '⛔ Нет доступа', show_alert=True)
+    action = call.data.split(':')
+    if len(action) == 2 and action[1] == 'cancel':
+        bot.answer_callback_query(call.id, 'Отменено')
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except apihelper.ApiTelegramException: pass
+        return
+    if len(action) == 5 and action[1] == 'why':
+        _, _, target, code, origin = action
+        if target not in {'bot','all',*_TECH_AREAS} or code not in _CLOSE_REASONS or not origin.isdigit():
+            return bot.answer_callback_query(call.id, 'Неизвестная причина')
+        _tech_apply(target, True, _CLOSE_REASONS[code])
+        bot.answer_callback_query(call.id, '🔒 Закрыто: ' + _CLOSE_REASONS[code])
+        try: bot.delete_message(call.message.chat.id, call.message.message_id)
+        except apihelper.ApiTelegramException: pass
+        text, kb = _tech_panel()
+        try:
+            bot.edit_message_text(text, chat_id=call.message.chat.id, message_id=int(origin),
+                                  reply_markup=kb, parse_mode='HTML')
+        except apihelper.ApiTelegramException as exc:
+            if 'message is not modified' not in str(exc).lower():
+                bot.send_message(call.message.chat.id, text, reply_markup=kb, parse_mode='HTML')
+        return
+    target = action[1] if len(action) == 2 else ':'.join(action[1:])
+    if target in ('refresh','all:on'):
+        if target == 'all:on': _tech_apply('all', False)
+    elif target == 'all:off':
+        bot.answer_callback_query(call.id)
+        return _tech_choose_reason(call, 'all')
+    elif target == 'bot':
+        if is_maintenance(): _tech_apply('bot', False)
+        else:
+            bot.answer_callback_query(call.id)
+            return _tech_choose_reason(call, 'bot')
+    elif target in _TECH_AREAS:
+        if _tech_get_states()[target]: _tech_apply(target, False)
+        else:
+            bot.answer_callback_query(call.id)
+            return _tech_choose_reason(call, target)
+    else:
+        return bot.answer_callback_query(call.id, 'Неизвестный раздел', show_alert=True)
+    bot.answer_callback_query(call.id, '✅ Сохранено')
+    text, kb = _tech_panel()
+    _safe_edit(call, text, kb)
 
 def _tech_area_for_update(update):
     """Определяет, к какому разделу относится действие, включая старые кнопки."""
@@ -3722,11 +4003,19 @@ class PartialTechMiddleware(BaseMiddleware):
     def pre_process(self, update, data):
         if getattr(update, 'successful_payment', None) is not None:
             return None
+        user = getattr(update, 'from_user', None)
+        if user is None:
+            return None
+        if _launch_staff(user.id):
+            return None
         area = _tech_area_for_update(update)
         if area is None or not _tech_disabled(area):
             return None
         # Не раскрываем внутренние детали техработ игроку.
-        msg = f'🛠 {_TECH_AREAS[area][1]} Остальные разделы доступны.'
+        msg = (f'🛠 РАЗДЕЛ ВРЕМЕННО НЕДОСТУПЕН\n\n'
+               f'{_TECH_AREAS[area][0]}\n'
+               f'📋 Причина: {_tech_block_reason(area)}\n\n'
+               'Другие разделы продолжают работать.')
         if hasattr(update, 'data'):
             bot.answer_callback_query(update.id, msg[:180], show_alert=True)
         else:
@@ -3759,8 +4048,6 @@ def _launch_claimed(uid):
     return bool(row)
 
 def _launch_staff(uid):
-    if uid==DEVELOPER_CHAT_ID:
-        return True
     try:
         info=openbot.get_user(uid)
         return isinstance(info,dict) and info.get('exists') and str(info.get('status','')).lower() in ('owner','developer','tester','admin')
@@ -3768,8 +4055,6 @@ def _launch_staff(uid):
         return False
 
 def _launch_admin(uid):
-    if uid==DEVELOPER_CHAT_ID:
-        return True
     try:
         info=openbot.get_user(uid)
         return isinstance(info,dict) and info.get('exists') and str(info.get('status','')).lower() in ('owner','developer','admin')
@@ -3777,37 +4062,68 @@ def _launch_admin(uid):
         return False
 
 def _launch_text():
-    diff=max(0,int((_LAUNCH_DATE-datetime.now(_LAUNCH_TZ)).total_seconds()))
-    if diff>0:
-        days, hours=divmod(diff,86400);hours,seconds=divmod(hours,3600);minutes,_=divmod(seconds,60)
-        return ('🎄 <b>RANDOM BOT — WINTER RELEASE 2026</b>\n\n'
-                '❄️ Зимний сезон скоро начнётся!\n'
+    remaining = max(0, int((_LAUNCH_DATE-datetime.now(_LAUNCH_TZ)).total_seconds()))
+    if remaining:
+        days, rest = divmod(remaining, 86400)
+        hours, rest = divmod(rest, 3600)
+        minutes, _ = divmod(rest, 60)
+        return ('🎄 <b>RANDOM BOT · ЗИМНЕЕ ОБНОВЛЕНИЕ</b>\n'
+                '━━━━━━━━━━━━━━━━━━\n\n'
+                '❄️ Наш зимний сезон уже близко!\n'
                 f'⏳ До открытия: <b>{days} д. {hours:02d} ч. {minutes:02d} мин.</b>\n\n'
-                '🎁 За ожидание тебя ждёт подарок.\n'
-                '📅 Запуск: 1 декабря 2026, 00:00 (МСК).')
-    return ('🚀 <b>ЗИМНЕЕ ОБНОВЛЕНИЕ ОТКРЫТО!</b>\n\n'
-            'Спасибо, что дождался зимнего сезона! 🎄\n'
-            'Нажми «🎮 Играть», чтобы получить подарок и открыть меню.')
+                '🎁 В день релиза каждый игрок сможет получить праздничный подарок.\n'
+                '📅 <b>Открытие: 1 декабря 2026 года, 00:00 МСК</b>\n\n'
+                '🌐💠 Openbot.Ai')
+    return ('🎉 <b>ЗИМНЕЕ ОБНОВЛЕНИЕ ОТКРЫТО!</b>\n\n'
+            '❄️ Зимние игры, ярмарка и подарки теперь доступны.\n'
+            '🎁 Нажми «Играть», чтобы открыть меню и получить подарок.')
 
-def _launch_keyboard():
-    kb=types.InlineKeyboardMarkup()
-    if _launch_pending():
+
+def _launch_keyboard(viewer_id=None, preview=False):
+    kb=types.InlineKeyboardMarkup(row_width=1)
+    waiting=datetime.now(_LAUNCH_TZ)<_LAUNCH_DATE
+    if waiting and (preview or _launch_pending()):
         kb.add(types.InlineKeyboardButton('⏳ Обновить таймер',callback_data='launch:check'))
     else:
         kb.add(types.InlineKeyboardButton('🎮 Играть',callback_data='launch:play'))
+    if viewer_id is not None and _launch_staff(viewer_id):
+        kb.add(types.InlineKeyboardButton('🛠 Войти в бот (сотрудник)',callback_data='launch:staff'))
+        # Панель настройки доступна только owner/developer/admin, не tester.
+        if _launch_admin(viewer_id):
+            kb.add(types.InlineKeyboardButton('⚙️ Панель запуска',callback_data='launch:admin:panel'))
     return kb
 
-def _launch_show(chat_id, edit_id=None):
-    text=_launch_text();keyboard=_launch_keyboard()
+
+def _launch_show(chat_id,edit_id=None,viewer_id=None,preview=False):
+    text=_launch_text()
+    keyboard=_launch_keyboard(viewer_id,preview)
     if edit_id is not None:
         try:
             return bot.edit_message_text(text,chat_id=chat_id,message_id=edit_id,
                                          reply_markup=keyboard,parse_mode='HTML')
         except apihelper.ApiTelegramException as exc:
-            if 'message is not modified' in str(exc).lower():
-                return None
+            if 'message is not modified' in str(exc).lower():return None
             raise
     return bot.send_message(chat_id,text,reply_markup=keyboard,parse_mode='HTML')
+
+
+def _launch_admin_panel():
+    enabled=_launch_enabled()
+    waiting=_launch_pending()
+    text=('🎄 <b>RANDOM BOT · ЗИМНИЙ ЗАПУСК</b>\n'
+          '━━━━━━━━━━━━━━━━━━\n\n'
+          f'Режим ожидания: {"🟢 Включён" if enabled else "🔴 Выключен"}\n'
+          f'Обратный отсчёт: {"⏳ Активен" if waiting else "✅ Не активен"}\n'
+          'Релиз: 01.12.2026, 00:00 МСК\n\n'
+          'Сотрудники имеют доступ к боту во время ожидания.\n'
+          'Для проверки заставки нажми «Предпросмотр».')
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    kb.row(types.InlineKeyboardButton('🟢 Включить',callback_data='launch:admin:on'),
+           types.InlineKeyboardButton('🔴 Выключить',callback_data='launch:admin:off'))
+    kb.add(types.InlineKeyboardButton('👁 Предпросмотр заставки',callback_data='launch:admin:preview'))
+    kb.add(types.InlineKeyboardButton('🔄 Обновить',callback_data='launch:admin:panel'))
+    kb.add(types.InlineKeyboardButton('🏠 Главное меню',callback_data='launch:staff'))
+    return text,kb
 
 def _launch_gift(uid,first_name,username):
     # Транзакция через ATTACH: награда и метка выдачи атомарны.
@@ -3833,44 +4149,82 @@ conn.commit()
 @bot.message_handler(commands=['launch'])
 def winter_launch_admin(message):
     if message.chat.type!='private' or not _launch_admin(message.from_user.id):
-        return bot.reply_to(message,'⛔ Доступно только администрации в личных сообщениях.')
-    parts=(message.text or '').split()
-    if len(parts)==1 or (len(parts)==2 and parts[1]=='status'):
-        return bot.reply_to(message,('🟢 Запуск включён' if _launch_enabled() else '🔴 Запуск отключён')+'\n'+_launch_text(),parse_mode='HTML')
-    if len(parts)!=2 or parts[1] not in ('on','off'):
-        return bot.reply_to(message,'Формат: /launch on | /launch off | /launch status')
-    conn.execute('INSERT INTO system_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                 ('winter_launch','1' if parts[1]=='on' else '0'))
-    conn.commit()
-    bot.reply_to(message,'✅ Winter Launch '+('включён' if parts[1]=='on' else 'отключён'))
+        return bot.reply_to(message,'⛔ Только администрация в личных сообщениях.')
+    args=(message.text or '').split()
+    if len(args)==1 or args[1:]==['status']:
+        text,kb=_launch_admin_panel()
+        return bot.send_message(message.chat.id,text,reply_markup=kb,parse_mode='HTML')
+    if args[1:]==['preview']:
+        return _launch_show(message.chat.id,viewer_id=message.from_user.id,preview=True)
+    if len(args)!=2 or args[1] not in ('on','off'):
+        return bot.reply_to(message,'Формат: /launch on|off|preview|status')
+    enabled=args[1]=='on'
+    _save_setting('winter_launch','1' if enabled else '0')
+    if enabled:
+        return _launch_show(message.chat.id,viewer_id=message.from_user.id,preview=True)
+    text,kb=_launch_admin_panel()
+    bot.send_message(message.chat.id,text,reply_markup=kb,parse_mode='HTML')
+    return bot.send_message(message.chat.id,'🏠 <b>Главное меню Random Bot</b>',
+                            reply_markup=main_mune(),parse_mode='HTML')
 
-@bot.callback_query_handler(func=lambda c: bool(c.data) and c.data.startswith('launch:'))
+
+@bot.callback_query_handler(func=lambda c:bool(c.data) and c.data.startswith('launch:'))
 def winter_launch_callback(call):
     uid=call.from_user.id
-    if call.data=='launch:check':
-        bot.answer_callback_query(call.id,'⏳ Таймер обновлён')
-        return _launch_show(call.message.chat.id,call.message.message_id)
-    if call.data!='launch:play':
+    value=call.data or ''
+    if value.startswith('launch:admin:'):
+        if not _launch_admin(uid) or call.message.chat.type!='private':
+            return bot.answer_callback_query(call.id,'⛔ Нет доступа',show_alert=True)
+        action=value.split(':',2)[2]
+        if action=='on':
+            _save_setting('winter_launch','1')
+            bot.answer_callback_query(call.id,'✅ Ожидание включено')
+            return _launch_show(call.message.chat.id,call.message.message_id,
+                                viewer_id=uid,preview=True)
+        if action=='off':
+            _save_setting('winter_launch','0')
+        elif action=='preview':
+            bot.answer_callback_query(call.id,'👁 Предпросмотр')
+            return _launch_show(call.message.chat.id,call.message.message_id,
+                                viewer_id=uid,preview=True)
+        elif action!='panel':
+            return bot.answer_callback_query(call.id,'Неизвестная кнопка')
+        bot.answer_callback_query(call.id,'✅ Настройки обновлены')
+        text,kb=_launch_admin_panel()
+        return _safe_edit(call,text,kb)
+    if value=='launch:staff':
+        if not _launch_staff(uid):
+            return bot.answer_callback_query(call.id,'⛔ Режим сотрудника недоступен',show_alert=True)
+        bot.answer_callback_query(call.id,'🛠 Режим сотрудника')
+        return _safe_edit(call,'🛠 <b>RANDOM BOT · РЕЖИМ СОТРУДНИКА</b>\n\n'
+                               'Все разделы доступны для проверки.',main_mune())
+    if value=='launch:check':
+        bot.answer_callback_query(call.id,'⏳ Экран обновлён')
+        return _launch_show(call.message.chat.id,call.message.message_id,
+                            viewer_id=uid,preview=_launch_staff(uid))
+    if value!='launch:play':
         return bot.answer_callback_query(call.id,'Неизвестная кнопка')
     if _launch_pending():
-        bot.answer_callback_query(call.id,'⏳ До открытия ещё есть время!',show_alert=True)
-        return _launch_show(call.message.chat.id,call.message.message_id)
+        if _launch_staff(uid):
+            bot.answer_callback_query(call.id,'🛠 Режим сотрудника')
+            return _safe_edit(call,'🛠 <b>Главное меню сотрудника</b>',main_mune())
+        bot.answer_callback_query(call.id,'⏳ До открытия ещё есть время',show_alert=True)
+        return _launch_show(call.message.chat.id,call.message.message_id,viewer_id=uid)
     try:
         claimed=_launch_gift(uid,call.from_user.first_name or 'Игрок',call.from_user.username)
     except Exception:
         logging.getLogger('random_bot.launch').exception('Ошибка выдачи подарка запуска')
-        return bot.answer_callback_query(call.id,'Не удалось выдать подарок. Попробуй снова.',show_alert=True)
+        return bot.answer_callback_query(call.id,'Не удалось выдать подарок.',show_alert=True)
     try:
         openbot.create_id(uid,call.from_user.first_name or 'Игрок')
         openbot.register_bot_activity(uid,'Random_bot')
     except Exception:
         logging.getLogger('random_bot.launch').warning('Openbot ID sync failed for %s',uid)
-    bot.answer_callback_query(call.id,('🎁 Подарок получен!' if claimed else '🎮 Приятной игры!'),show_alert=True)
-    text=('🎉 <b>Спасибо за ожидание!</b>\n\n🎁 Твой подарок за релиз:\n'
-          '💰 5 000 монет\n❄️ 25 снежинок\n🥇 1 золотой кейс\n🏅 Титул «Первопроходец зимы»\n\n') if claimed else '🎮 <b>С возвращением!</b>\n\n'
-    text+='👇 Выбирай, во что сыграть!'
-    bot.edit_message_text(text,chat_id=call.message.chat.id,message_id=call.message.message_id,
-                          reply_markup=main_mune(),parse_mode='HTML')
+    bot.answer_callback_query(call.id,'🎁 Подарок получен!' if claimed else '🎮 Приятной игры!')
+    notice=('🎁 <b>Подарок за релиз получен!</b>\n'
+            '💰 5 000 монет\n❄️ 25 снежинок\n🥇 Золотой кейс\n'
+            '🏅 Первопроходец зимы\n\n') if claimed else ''
+    return _safe_edit(call,notice+'🏠 <b>Главное меню Random Bot</b>',main_mune())
 
 class WinterLaunchMiddleware(BaseMiddleware):
     def __init__(self):
@@ -3904,6 +4258,10 @@ class WinterLaunchMiddleware(BaseMiddleware):
     def post_process(self,update,data,exception):pass
 
 bot.setup_middleware(WinterLaunchMiddleware())
+
+# Порядок: баны → техработы → заставка релиза → закрытые игры.
+bot.setup_middleware(RandomFeatureAccessMiddleware())
+
 
 
 
@@ -4444,29 +4802,151 @@ _WG_NAMES = {'memory':'🧠 Снежная память','safe':'🔐 Ледян
 _WG_DEFAULTS = {'memory':True,'safe':False,'quiz':False}
 
 def _wg_enabled(mode):
-    if mode not in _WG_DEFAULTS:return False
-    row=conn.execute('SELECT value FROM system_settings WHERE key=?',(f'feature_{mode}',)).fetchone()
-    return _WG_DEFAULTS[mode] if row is None else str(row[0])=='1'
+    return _feature_enabled(mode)
 
-def _wg_feature_set(mode,enabled):
-    if mode not in _WG_DEFAULTS:raise ValueError('Неизвестный раздел')
-    with sqlite3.connect(DB_NAME,timeout=10) as db:
-        db.execute('INSERT INTO system_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                   (f'feature_{mode}','1' if enabled else '0'))
+
+def _wg_reason(mode):
+    return _feature_reason(mode)
+
+
+def _wg_feature_set(mode, enabled, reason=None):
+    if mode not in _FEATURE_CATALOG:
+        raise ValueError('Неизвестная игра')
+    with sqlite3.connect(DB_NAME, timeout=15) as db:
+        db.execute('INSERT INTO system_settings(key,value) VALUES(?,?) '
+                   'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                   (f'feature_{mode}', '1' if enabled else '0'))
+        if enabled:
+            db.execute('DELETE FROM system_settings WHERE key=?',
+                       (f'feature_reason_{mode}',))
+        else:
+            db.execute('INSERT INTO system_settings(key,value) VALUES(?,?) '
+                       'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+                       (f'feature_reason_{mode}',
+                        (reason or 'Технические работы')[:160]))
+
+
+def _wg_panel():
+    kb=types.InlineKeyboardMarkup(row_width=1)
+    lines=['🎮 <b>RANDOM BOT · УПРАВЛЕНИЕ ИГРАМИ</b>',
+           '━━━━━━━━━━━━━━━━━━','',
+           '🟢 Нажми для закрытия с причиной.',
+           '🔒 Нажми для открытия игры.','']
+    for key,(name,_) in _FEATURE_CATALOG.items():
+        enabled=_feature_enabled(key)
+        lines.append(f'{"🟢" if enabled else "🔒"} {html.escape(name)}: '
+                     + ('Открыта' if enabled else html.escape(_feature_reason(key))))
+        kb.add(types.InlineKeyboardButton(
+            f'{"🟢" if enabled else "🔒"} {name}', callback_data='feat:toggle:'+key))
+    kb.row(types.InlineKeyboardButton('✅ Открыть все',callback_data='feat:all:on'),
+           types.InlineKeyboardButton('🔒 Закрыть все',callback_data='feat:all:off'))
+    kb.add(types.InlineKeyboardButton('🔄 Обновить',callback_data='feat:refresh'))
+    lines.extend(['', 'Заблокированные игры видны игрокам с 🔒.',
+                  'Сотрудники могут их тестировать.',
+                  'Команда: <code>/features</code>'])
+    return '\n'.join(lines),kb
+
+
+def _wg_reason_select(call,target):
+    name='всех игр' if target=='all' else _FEATURE_CATALOG[target][0]
+    kb=types.InlineKeyboardMarkup(row_width=2)
+    origin=call.message.message_id
+    buttons=[types.InlineKeyboardButton(label,callback_data=f'feat:why:{target}:{code}:{origin}')
+             for code,label in _CLOSE_REASONS.items()]
+    for start in range(0,len(buttons),2):
+        kb.row(*buttons[start:start+2])
+    kb.add(types.InlineKeyboardButton('❌ Отмена',callback_data='feat:cancel'))
+    return bot.send_message(call.message.chat.id,
+                   f'🔒 <b>Причина закрытия</b>\n\n{html.escape(name)}\nВыбери причину:',
+                   reply_markup=kb,parse_mode='HTML')
+
 
 @bot.message_handler(commands=['features'])
 def winter_features_admin(message):
     if message.chat.type!='private' or not _launch_admin(message.from_user.id):
-        return bot.reply_to(message,'⛔ Только для разработчиков.')
-    parts=(message.text or '').split()
-    if len(parts)==1 or len(parts)==2 and parts[1]=='status':
-        return bot.reply_to(message,'🎮 Поэтапные обновления:\n'+ '\n'.join(
-            f'{"🟢" if _wg_enabled(k) else "🔒"} {v} — {"открыто" if _wg_enabled(k) else "скоро"}'
-            for k,v in _WG_NAMES.items())+'\n\nФормат: /features safe on | /features quiz off')
-    if len(parts)!=3 or parts[1] not in _WG_DEFAULTS or parts[2] not in ('on','off'):
-        return bot.reply_to(message,'Формат: /features memory|safe|quiz on|off')
-    _wg_feature_set(parts[1],parts[2]=='on')
-    bot.reply_to(message,f'✅ {_WG_NAMES[parts[1]]}: '+('открыто' if parts[2]=='on' else 'скрыто'))
+        return bot.reply_to(message,'⛔ Панель доступна администрации в ЛС.')
+    args=(message.text or '').split(maxsplit=3)
+    if len(args)==1 or args[1:] == ['status']:
+        text,kb=_wg_panel()
+        return bot.send_message(message.chat.id,text,reply_markup=kb,parse_mode='HTML')
+    if len(args)<3 or args[1] not in (*_FEATURE_CATALOG,'all') or args[2] not in ('on','off'):
+        return bot.reply_to(message,'Формат: /features название_игры on|off [причина]. '
+                            'Названия показаны в панели /features.')
+    reason=args[3].strip()[:160] if len(args)>3 else 'Технические работы'
+    targets=_FEATURE_CATALOG if args[1]=='all' else (args[1],)
+    for key in targets:
+        _wg_feature_set(key,args[2]=='on',reason)
+    text,kb=_wg_panel()
+    bot.send_message(message.chat.id,text,reply_markup=kb,parse_mode='HTML')
+
+
+@bot.callback_query_handler(func=lambda c:bool(c.data) and c.data.startswith('feat:'))
+def winter_features_callback(call):
+    if not _tech_authorized(call.from_user,call.message.chat):
+        return bot.answer_callback_query(call.id,'⛔ Нет доступа',show_alert=True)
+    a=(call.data or '').split(':')
+    cid,mid=call.message.chat.id,call.message.message_id
+    if a==['feat','cancel']:
+        bot.answer_callback_query(call.id,'Отменено')
+        try:bot.delete_message(cid,mid)
+        except apihelper.ApiTelegramException:pass
+        return
+    if len(a)==5 and a[1]=='why':
+        _,_,target,reason_code,origin=a
+        if (target not in (*_FEATURE_CATALOG,'all') or
+                reason_code not in _CLOSE_REASONS or not origin.isdigit()):
+            return bot.answer_callback_query(call.id,'Неверная причина',show_alert=True)
+        targets=_FEATURE_CATALOG if target=='all' else (target,)
+        for key in targets:
+            _wg_feature_set(key,False,_CLOSE_REASONS[reason_code])
+        bot.answer_callback_query(call.id,'🔒 Игры закрыты')
+        try:bot.delete_message(cid,mid)
+        except apihelper.ApiTelegramException:pass
+        text,kb=_wg_panel()
+        try:
+            bot.edit_message_text(text,chat_id=cid,message_id=int(origin),
+                                  reply_markup=kb,parse_mode='HTML')
+        except apihelper.ApiTelegramException as exc:
+            if 'message is not modified' not in str(exc).lower():
+                bot.send_message(cid,text,reply_markup=kb,parse_mode='HTML')
+        return
+    if a==['feat','all','off']:
+        bot.answer_callback_query(call.id)
+        return _wg_reason_select(call,'all')
+    if a==['feat','all','on']:
+        for key in _FEATURE_CATALOG:_wg_feature_set(key,True)
+    elif len(a)==3 and a[1]=='toggle' and a[2] in _FEATURE_CATALOG:
+        mode=a[2]
+        if _feature_enabled(mode):
+            bot.answer_callback_query(call.id)
+            return _wg_reason_select(call,mode)
+        _wg_feature_set(mode,True)
+    elif a!=['feat','refresh']:
+        return bot.answer_callback_query(call.id,'Неизвестная кнопка')
+    bot.answer_callback_query(call.id,'✅ Сохранено')
+    text,kb=_wg_panel()
+    _safe_edit(call,text,kb)
+
+
+@bot.callback_query_handler(func=lambda c:bool(c.data) and c.data.startswith('feat_locked:'))
+def winter_feature_locked_callback(call):
+    key=(call.data or '').partition(':')[2]
+    if key not in _FEATURE_CATALOG:
+        return bot.answer_callback_query(call.id,'Неизвестная игра',show_alert=True)
+    if not _feature_enabled(key) and not _launch_staff(call.from_user.id):
+        return bot.answer_callback_query(call.id,_feature_closed_text(key)[:190],show_alert=True)
+    bot.answer_callback_query(call.id,'🧪 Тестирование игры')
+    payload=_FEATURE_CATALOG[key][1]
+    if payload.startswith('wg:'):
+        mode=key
+        state=_wg_start(call.from_user.id,call.message.chat.id,mode)
+        return _safe_edit(call,_wg_view(mode,state),_wg_keyboard(mode,state))
+    if key=='ttt':
+        return _safe_edit(call,'❌⭕ <b>КРЕСТИКИ-НОЛИКИ</b>\n\nВыбери сложность ИИ:',ttt_level_markup())
+    # Новые игры используют исходные callback-имена. Не создаём второй обработчик игрового состояния.
+    _ng_start(call.from_user.id,call.message.chat.id,key)
+    text,kb=_ng_render(call.from_user.id)
+    return _safe_edit(call,text,kb)
 
 @bot.message_handler(commands=['testgame'])
 def winter_testgame_admin(message):
@@ -4575,9 +5055,9 @@ def winter_games_callback(call):
         return bot.answer_callback_query(call.id,'Неизвестная игра',show_alert=True)
     mode,action=data[1],data[2]
     if action == 'locked':
-        return bot.answer_callback_query(call.id,'🔒 Игра появится в следующем обновлении!',show_alert=True)
+        return bot.answer_callback_query(call.id,'🔒 ' + _wg_reason(mode),show_alert=True)
     if not _wg_enabled(mode) and not _launch_staff(uid):
-        return bot.answer_callback_query(call.id,'🔒 Игра пока не открыта.',show_alert=True)
+        return bot.answer_callback_query(call.id,'🔒 ' + _wg_reason(mode),show_alert=True)
     if action == 'start':
         state=_wg_start(uid,call.message.chat.id,mode)
         bot.edit_message_text(_wg_view(mode,state),chat_id=call.message.chat.id,
@@ -4639,9 +5119,27 @@ def winter_games_callback(call):
                           message_id=call.message.message_id,reply_markup=_wg_keyboard(mode,state),parse_mode='HTML')
     bot.answer_callback_query(call.id)
 
-@bot.message_handler(func=lambda m: (m.text or '').startswith('🔒 ') and (m.text or '').endswith(' — скоро'))
+@bot.message_handler(func=lambda m: (m.text or '').startswith('🔒 ') and
+                     (m.text or '')[2:].replace(' — скоро','') in
+                     {title for title,_ in _FEATURE_CATALOG.values()})
 def winter_locked_reply(message):
-    bot.reply_to(message,'🔒 Игра откроется в следующем обновлении.')
+    name=(message.text or '')[2:].replace(' — скоро','')
+    key=next((k for k,(title,_) in _FEATURE_CATALOG.items() if name==title),None)
+    if key:
+        uid=message.from_user.id
+        if not _feature_enabled(key) and not _launch_staff(uid):
+            return bot.reply_to(message,_feature_closed_text(key))
+        if key=='ttt':
+            return bot.send_message(message.chat.id,
+                '❌⭕ <b>КРЕСТИКИ-НОЛИКИ</b>\n\nВыбери сложность ИИ:',
+                reply_markup=ttt_level_markup(reply=True),parse_mode='HTML')
+        if key in _WG_NAMES:
+            state=_wg_start(uid,message.chat.id,key)
+            return bot.send_message(message.chat.id,_wg_view(key,state),
+                                    reply_markup=_wg_keyboard(key,state),parse_mode='HTML')
+        _ng_start(uid,message.chat.id,key)
+        text,kb=_ng_render(uid)
+        return bot.send_message(message.chat.id,text,reply_markup=kb,parse_mode='HTML')
 
 # Reply-пользователи открывают те же Inline-игры внутри сообщения.
 @bot.message_handler(func=lambda m: (m.text or '') == '🎲 Рандом-мир')
@@ -4650,11 +5148,12 @@ def _old_random_world_button(message):
                      reply_markup=main_mune())
 
 
-@bot.message_handler(func=lambda m: (m.text or '') in _WG_NAMES.values())
+@bot.message_handler(func=lambda m: (m.text or '') in _WG_NAMES.values() or
+                     (m.text or '').removeprefix('🧪 ') in _WG_NAMES.values())
 def winter_games_reply(message):
-    mode=next(k for k,v in _WG_NAMES.items() if v==message.text)
+    mode=next(k for k,v in _WG_NAMES.items() if v==message.text.removeprefix('🧪 '))
     if not _wg_enabled(mode) and not _launch_staff(message.from_user.id):
-        return bot.reply_to(message,'🔒 Игра появится в следующем обновлении!')
+        return bot.reply_to(message,'🔒 ' + _wg_reason(mode))
     state=_wg_start(message.from_user.id,message.chat.id,mode)
     bot.send_message(message.chat.id,_wg_view(mode,state),reply_markup=_wg_keyboard(mode,state),parse_mode='HTML')
 
@@ -4982,7 +5481,7 @@ def handle_callback(call):
         key = call.data.partition(':')[2]
         if key not in SNOW_TITLES:
             return bot.answer_callback_query(call.id, 'Товар не найден', show_alert=True)
-        if _tech_disabled('shop') or _tech_disabled('rewards'):
+        if (_tech_disabled('shop') or _tech_disabled('rewards')) and not _launch_staff(user_id):
             return bot.answer_callback_query(call.id, 'Магазин временно закрыт', show_alert=True)
         title, price = SNOW_TITLES[key]
         try:
@@ -5441,7 +5940,7 @@ def handle_callback(call):
     # ===== Новый игры и обнова =====
     if call.data == 'game' or call.data == 'back_to_games':
         delete_active_game(user_id)
-        bot.edit_message_text("🔮 <b>Выберите зимнюю игру:</b>", chat_id=cid, message_id=mid, reply_markup=game_mune(), parse_mode="HTML")
+        bot.edit_message_text("🔮 <b>Выберите зимнюю игру:</b>", chat_id=cid, message_id=mid, reply_markup=game_mune(user_id), parse_mode="HTML")
         bot.answer_callback_query(call.id)
 
     # Пять новых игр: старые callback-имена открывают новые механики.
@@ -5497,7 +5996,7 @@ def handle_callback(call):
 @bot.pre_checkout_query_handler(func=lambda query: True)
 def handle_pre_checkout(query):
     try:
-        if _tech_disabled('shop'):
+        if _tech_disabled('shop') and not _launch_staff(query.from_user.id):
             return bot.answer_pre_checkout_query(
                 query.id, ok=False, error_message='🛠 Магазин временно закрыт.'
             )
@@ -5619,7 +6118,7 @@ def handle_all_reply_menus(message):
 
     if text == "❄️ Зимние игры":
         delete_active_game(uid)
-        bot.send_message(chat_id, "🎮 <b>СНЕЖНЫЕ ИГРЫ</b>\n━━━━━━━━━━━━━━━━━━\n\nВыбери игру:", reply_markup=game_mune_reply(), parse_mode="HTML")
+        bot.send_message(chat_id, "🎮 <b>СНЕЖНЫЕ ИГРЫ</b>\n━━━━━━━━━━━━━━━━━━\n\nВыбери игру:", reply_markup=game_mune_reply(uid), parse_mode="HTML")
         return
 
     if text == "👤 Профиль":
@@ -6041,16 +6540,16 @@ def handle_reply_game_actions(message):
 
     if text == "⬅ Игры":
         delete_active_game(uid)
-        bot.send_message(chat_id, "🎮 <b>НОВЫЙ ГОДСКИЕ ИГРЫ</b>\n\nВыбери игру:", reply_markup=game_mune_reply(), parse_mode="HTML")
+        bot.send_message(chat_id, "🎮 <b>НОВЫЙ ГОДСКИЕ ИГРЫ</b>\n\nВыбери игру:", reply_markup=game_mune_reply(uid), parse_mode="HTML")
         return
 
     if text == "🛑 Выйти из игры":
         delete_active_game(uid)
-        bot.send_message(chat_id, "🏃 Игра завершена.", reply_markup=game_mune_reply())
+        bot.send_message(chat_id, "🏃 Игра завершена.", reply_markup=game_mune_reply(uid))
         return
 
     if not game:
-        bot.send_message(chat_id, "ℹ️ Активной игры нет.", reply_markup=game_mune_reply())
+        bot.send_message(chat_id, "ℹ️ Активной игры нет.", reply_markup=game_mune_reply(uid))
         return
 
     game_type = game[0]
@@ -6069,11 +6568,11 @@ def handle_reply_game_actions(message):
             keyboard = game_action_reply('ttt')
         else:
             notice += '\n\n' + ttt_board_text(board)
-            keyboard = game_mune_reply()
+            keyboard = game_mune_reply(uid)
         bot.send_message(chat_id, notice, parse_mode='HTML', reply_markup=keyboard)
         return
 
-@bot.message_handler(func=lambda message: True)
+@bot.message_handler(content_types=["text"], func=lambda message: bool(message.text) and not message.text.lstrip().startswith("/"))
 def handle_messages(message):
     user_id = message.from_user.id
 
